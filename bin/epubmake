@@ -1,0 +1,4 @@
+export TOOLS_DIR=$(dirname $(realpath "$0"))
+export PATH="$PATH:$TOOLS_DIR" 
+make "$@" 
+

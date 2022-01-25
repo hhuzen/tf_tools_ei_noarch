@@ -1,0 +1,32 @@
+export TOOLS_DIR=$(dirname $(realpath "$0"))
+
+# install profile
+PROFILE=""
+for p in .profile .bash_profile .bashrc ; do
+  if [ -f "$HOME/$p" ]; then
+    PROFILE="$HOME/$p"
+    break;
+  fi
+done 
+
+if [ -f "$PROFILE" ] ; then
+  cp $TOOLS_DIR/tfprofile/tf_profile $HOME/.tf_profile
+  grep -q ".tf_profile" "$PROFILE"
+  if [ $? -ne 0 ] ; then
+    echo "[ -f ~/.tf_profile ] && . ~/.tf_profile" >> "$PROFILE"
+    echo "setup done for $PROFILE"
+  else
+    echo "setup already done for $PROFILE"
+  fi
+fi
+
+# install vim
+if [ -e "$TOOLS_DIR/.vim" ]; then
+  rm -rf ~/.vimrc.bkup
+  rm -rf ~/.vim
+  [ -f ~/.vimrc ] && mv ~/.vimrc ~/.vimrc.bkup
+  [ -d ~/.vim ] && mv ~/.vim ~/.vim.bkup
+  cp "$TOOLS_DIR/.vimrc" $HOME
+  cp -r "$TOOLS_DIR/.vim" $HOME
+fi
+

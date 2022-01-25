@@ -1,0 +1,2579 @@
+#!/bin/env perl
+
+my $passphrase="";
+my $pass_missing;
+my $target="";
+my $github_match = "github.com";
+my $gitea_match = "gitea";
+my $bb_match = "bitbucket";
+my $mandatory_branch="";
+my @ign=();
+my @ign_uncrypted=();
+
+
+# work specifics
+use Net::Domain qw(hostfqdn);
+
+my $certauth="certname";
+my $org="organization";
+my $domext=".xx";
+
+
+#--- gti
+# gti : GIT Rest API access/  GIT/CVS help script
+#
+# This utility uses the GIT REST api for access to the GIT server.
+# Supported are BitBucket, Gitea and GitHub.
+#
+#
+# Usage:
+#   gti [bb|bitbucket|gt|gitea|gh|github] [common options] [gti common options ] <gticommand> [command options]
+#
+# gticommand:
+#   help
+#    check                 # check access (fix certificates), display my account
+#    users                 # list users 
+#    projects              # list projects 
+#    repos [-p <project>][-u <user>][[-n] <namepattern>][-c]     # list repositories available to THIS USER
+#                          # -p <project for selective by project
+#                          # -u <user> for selective by userrepositories
+#                          # -n <pattern> for filter (-n can be omitted) 
+#                          # -c for git clone
+#                          # -f <file> get file from remote repo to stdout
+#                          # -F <file> get file from remote repo to local file 
+#                          # -t get tags
+#                          # -q no verbose, implies autoconfirm
+#                          # -v <version> : version
+#                          # -h : use html url in stead of ssh url
+#    clone|co <xyz>        # if xyz ends in .git as in a checkout url, a straigh 'git clone <xyz>' is done, else
+#                          # processed as 'repos -c ...'
+#                          
+#    cm [items to commit]  # commits changes using comment from history in ~/.cm
+#                          # for cm the target gitserver is selected automatically
+#
+#    cu                    # update current dir (cvs update -A -d / git pull)
+#    tag [-l] [-d] [-r] [<tag>]
+#                          # -l: list (default)
+#                          # -d <tag> : delete tag
+#                          # -r: retag most recent tag
+#                          # <tag> : set tag
+#
+# helpfull commands;
+#    u/uc crypt/uncrypt    # encrypt security related data: 
+#         crypt            #  - crypt directory named xxx.uncrypted (skip *.skip)
+#         uncrypt          #  - uncrypt directory named xxx.crypted (skip *.skip)
+#    z/uz zip/unzip        # zip data into maxed sized archive chunks:
+#         zip              #  - zip directory named xxx.unzipped
+#         unzip            #  - unzip directory named xxx.zipped
+#    wrap/unwrap           # wrap=c+z unwrap=uz+uc
+#    wipe                  # wipe out security related stuff
+#                          # xxx.uncrypted .passphrase xxx.unzipped xxx.fingerprint 
+#                          # the idea is to store xxx.crypted and xxx.zipped in git
+#
+#  gti common options:
+#     --user <user>        # overrides USER 
+#     --noskip             # crypt/uncrypt: process .skip items
+# 
+#
+# -
+#
+# script for use
+#  - under BTU Genman - modules
+#  - under jos script (with no BTU)
+#
+#    This gti script provides crypt/uncrypt functionality to allow for storage of security sensitive data.
+#    The idea is that x.crypted directory is stored in a git repo, and x.uncrypted is not.
+#
+#    This gti script provides zip/unzip & split/concat functionality with maxed filesize allow for storage of large files.
+#    The idea is that x.zipped directory is stored in a git repo, and x.unzipped is not.
+#                         
+#    This gti uses the git rest api to obtain information. Since this is an http interface,
+#    a username/password is required. This is obtained from the ~/.netrc.    
+#    For GitHub the password is a generated access token.
+#
+# Env:          GTI_TARGET 
+#               GTI_USER 
+#               GTI_DEBUG=<0,1,2,3>
+#               GTI_VERBOSE=<0,1>
+#               GTI_GITEA_HOST=<hostname>
+#               GTI_TARGET=gitea|bitbucket
+#               USER or USERNAME
+#               GTI_PASSWORD
+#               GTI_PROJECT_PREFERENCE=<high to low list of projectnames>
+#               GTI_GITEA_HOST=<host>
+#
+# example:
+#       in .netrc:  
+#       machine bitbucket login useri00 password Welkom01
+#       machine gitea login useri00 password Welkom01
+#
+# allow multiple entries, selectable by GTI_USER:
+#       machine github login useri00 password ghp_nDuxJLG7LpW8U1fBTUH4SQbpRh5f1P0ubITX
+#       machine github login useri01 password ghp_BTUH4SQbpRh5f1P0ubITXnDuxJLG7LpW8U1f
+#       GTI_USER=useri00 gti gh repos
+#       GTI_USER=useri01 gti gh repos
+#       
+#       gti bitbucket co cta-webservices-rest 
+#       gti gitea co yat-fbp 
+#
+#       gti gh -v check
+#       gti gh repos
+#
+#       gti cm README.md
+#---
+
+my $TAG="*gti*";
+if ( ! $ENV{GUTSPL_VERBOSE} ){ $ENV{GUTSPL_VERBOSE}=$ENV{GTI_VERBOSE}; }
+if ( ! $ENV{GUTSPL_DEBUG} ){ $ENV{GUTSPL_DEBUG}=$ENV{GTI_DEBUG}; }
+if ( $ENV{GTI_USER} ){ $ENV{USER}=$ENV{GTI_USER}; }
+
+use File::stat;
+use File::Path qw(make_path remove_tree);
+  
+my $opt_noskip=0;
+my $opt_force=0;
+my $gitprojectdir=undef; 
+my $gitprojecturl=undef; 
+my $gti_user="";
+#=======================================================================#
+#==gutspl=CHECKSUM=46150
+#==gutspl update done at : 2022-01-25T09:25:42
+#=======================================================================#
+#==BEGIN gutspl injection part == do not alter
+#=======================================================================#
+
+BEGIN { $| = 1 }
+use strict;
+use Term::ANSIColor;
+use Cwd 'realpath';
+use Cwd;
+use File::Basename;
+use Sys::Hostname;
+use JSON::PP;
+use Data::Dumper;
+use POSIX qw(strftime);
+
+my $curlbaseurl="";
+my $curlparm="";
+my $curltarget="";
+
+my $THISSCRIPT=realpath( $0 );
+my $THISSCRIPTDIR=dirname( ${THISSCRIPT});
+$ENV{PATH}.=":$THISSCRIPTDIR";
+
+my $TOOLARGS=join( " ", @ARGV);
+my $TMP=$ENV{TMP} || "/tmp";
+my $C_NORM;
+my $C_NOT;
+my $C_VER;
+my $C_DEB;
+my $C_ERR;
+my $C_WRN;
+my $C_ASK;
+my $C_TRC;
+my $C_OK;
+my $C_NOK;
+my $C__UP;
+my $C_DWN;
+my $user=$ENV{USER} || $ENV{USERNAME} || "?user" ;
+
+my $COMMON_ARGS="";
+my $opt_bw=0;
+my $confirm_answer="";
+my $opt_ac=0;
+my $opt_noggc=0;
+my $opt_ggc="";
+my $opt_guts_platform="";
+my $opt_env;
+if ( $ENV{GUTPL_NOGGC}) { $opt_noggc=$ENV{GUTPL_NOGGC}; }
+my $ERRORTAG="$TAG ERROR:";
+my $WARNINGTAG="$TAG WARNING:";
+my $NOTICETAG="$TAG NOTICE:";
+my $VERBOSETAG="$TAG VERBOSE:";
+my $DEBUGTAG="$TAG";
+my $ASKTAG="$TAG";
+
+my $opt_debug=$ENV{GUTSPL_DEBUG} || 0;
+my $opt_verbose=$ENV{GUTSPL_VERBOSE} || 0;
+my $opt_trace=$ENV{GUTSPL_TRACE} || 0;
+# returns 0 if common option processed - cannot shift
+sub common_option($) {
+    my $opt=shift;
+
+    if ( "$opt" eq "-bw" || "$opt" eq "--bw" ){
+      $COMMON_ARGS="$COMMON_ARGS -bw";
+      $opt_bw=1;
+      return 0;
+    } elsif( "$opt" eq "-v" || "$opt" eq "--verbose" ) {
+      $opt_verbose=$opt_verbose + 1;
+      $COMMON_ARGS="$COMMON_ARGS -v";
+      return 0;
+    } elsif( "$opt" eq "-d" || "$opt" eq "--debug" ) {
+      $opt_debug=$opt_debug + 1;
+      $COMMON_ARGS="$COMMON_ARGS -d";
+      return 0;
+    } elsif( "$opt" eq "-t" || "$opt" eq "--trace" ) {
+      $opt_verbose=$opt_verbose + 1;
+      $opt_trace=$opt_trace + 1;
+      $COMMON_ARGS="$COMMON_ARGS -t";
+      return 0;
+    } elsif( "$opt" eq "-a" || "$opt" eq "--autoconfirm" ) {
+      $COMMON_ARGS="$COMMON_ARGS -a";
+      $opt_ac=1;
+      return 0;
+    } elsif( "$opt" eq "-na" ) {
+      $COMMON_ARGS="$COMMON_ARGS -na";
+      $opt_ac=0;
+      return 0;
+    } elsif( "$opt" eq "-noggc" || "$opt" eq "--noggc" ) {
+      $COMMON_ARGS="$COMMON_ARGS -noggc";
+      $opt_noggc=1;
+      return 0;
+    } elsif( "$opt" =~ "-env=" ) {
+      $COMMON_ARGS="$COMMON_ARGS $opt";
+      $opt_env=$opt;
+      $opt_env =~ s/^[^=]*=//;
+      error( "oeps no sourcing" ) && exit 1; 
+      #. $opt_env || exit 1
+      return 0;
+    } elsif( "$opt" =~ "-ggc=" )  {
+      $COMMON_ARGS="$COMMON_ARGS $opt";
+      $opt_ggc=$opt;
+      $opt_ggc =~ s/^[^=]*=//;
+      $ENV{GGC_WORLD}="$opt_ggc";
+      return 0;
+    } elsif( "$opt" =~ "-guts_platform=" )  {
+      $opt_guts_platform=$opt;
+      $opt_guts_platform=~ s/^[^=]*=//;
+      $ENV{GUTS_PLATFORM}="$opt_guts_platform";
+      return 0;
+    } elsif( "$opt" eq "-?" )  {
+      usage();
+      exit 0;
+    }
+    return 1
+}
+
+sub common_init() {
+  my ($bw) = @_;
+  debug("init");
+
+  $C_NORM=color("reset");
+  $C_ASK=color("black on_green");
+
+  $C_VER=color("bold white on_blue");
+  $C_NOT=color("bold cyan on_blue");
+  $C_DEB=color("bold white on_magenta");
+  $C_ERR=color("bold white on_red");
+  $C_WRN=color("bold white on_yellow");
+  $C__UP=color("bold white on_magenta");
+  $C_DWN=color("white on_white");
+  $C_OK=color("bold white on_green");
+  $C_NOK=color("bold white on_red");
+  $C_TRC=color("bold red on_yellow");
+
+  if ($bw) {
+   $C_NORM='';
+   $C_VER='';
+   $C_NOT='';
+   $C_DEB='';
+   $C_ERR='';
+   $C_WRN='';
+   $C_ASK='';
+   $C__UP='';
+   $C_DWN='';
+   $C_OK='';
+   $C_NOK='';
+   $C_TRC='';
+  }
+  $VERBOSETAG=$C_VER.$TAG.$C_NORM. " ";
+  $NOTICETAG=$C_NOT.$TAG.$C_NORM. " ";
+  $DEBUGTAG=$C_DEB.$TAG.$C_NORM. " ";
+  $ERRORTAG=$C_ERR.$TAG.$C_NORM. " ERROR";
+  $WARNINGTAG=$C_WRN.$TAG.$C_NORM. " WARNING";
+  $ASKTAG=$C_ASK.$TAG.$C_NORM;
+
+  if ( $opt_verbose ) {
+    my $MYTAG="${C__UP}*${C_NORM}";
+    my @NOW=localtime();
+    my $date= strftime('%Y-%m-%dT%H:%M:%S', @NOW);
+
+    my $line=center( "started at $date","$TAG","*");
+    print( "${C__UP}$line${C_NORM}\n");
+    $line="${C_TRC} C_TRC ${C_ERR} C_ERR ${C_WRN} C_WRN ${C_ASK} C_ASK ${C_DWN} C_DWN ${C__UP} C__UP ${C_VER} C_VER ${C_NOT} C_NOT ${C_OK} C_OK ${C_NOK} C_NOK ${C_NORM} C_NORM";
+    print( "$MYTAG${C__UP}$line${C_NORM}\n");
+    print( "$MYTAG  HOST=". hostname(). " PID=$$ PPID=". getppid()."\n");
+    print( "$MYTAG  USER=$user\n" );
+    #print( "$MYTAG  uname -a="$(uname -a)
+    print( "$MYTAG  PATH=$ENV{PATH}\n");
+    print( "$MYTAG  \$^O=$^O\n");
+    print( "$MYTAG  GUTS_PLATFORM=$ENV{GUTS_PLATFORM}\n");
+    print( "$MYTAG  GGC_WORLD=$ENV{GGC_WORLD}\n");
+    print( "$MYTAG  TMP=$ENV{TMP}\n");
+    $line=center("***");
+    print( "$MYTAG  SCRIPT=". realpath($0)."\n");
+    print( "$MYTAG  ARGS=${TOOLARGS}\n");
+    print( "${C__UP}$line${C_NORM}\n");
+  }
+
+
+  for my $e (qw( http_proxy HTTP_PROXY https_proxy HTTPS_PROXY)) {
+    if ( $ENV{$e} ) {
+      notice("$e=$ENV{$e}");
+    }
+  }
+
+  if ( import_ggc() !=0 ) {return 1;}
+  return 0;  
+}
+
+sub import_ggc() {
+    if ( -d "$ENV{HOME}/GGC" ) {
+        $ENV{GGC_WORLD_SELECTED}=undef;
+        my $GGCTOOL=$TAG;  $GGCTOOL=~s/\*//g;
+        verbose("GGC import : $ENV{HOME}/GGC/ggc.sh show $GGCTOOL -perlvars");
+        if ( "$GGCTOOL" ) { 
+           my $ggcinfo=`$ENV{HOME}/GGC/ggc.sh show $GGCTOOL -perlvars`;
+           my $rc=$?;
+           if ( "$ggcinfo" =~ /tool .* is unknown/ ) {
+             verbose("GGC import SKIPPED: $ggcinfo");
+           } elsif ($rc != 0) {
+             verbose("GGC import NOT OK: $ggcinfo");
+             return 1;
+           } else {
+             verbose("GGC import OK: $ggcinfo");
+             eval "$ggcinfo";
+             if ($@) {
+                error( "GGC import failed: $@" );
+                return 1
+             }
+           }
+        }
+    } else {
+      verbose("import_ggc skipped");
+    }
+    return 0
+}
+
+
+sub common_help {
+ my $topic=shift;
+ if ( $topic =~ /-*(all|ALL)/ ) {
+        system("sed -n '/^#--- /,/^#---\$/p' ${THISSCRIPT}");
+        return 0;
+ }
+
+ if ( ! $topic ) {
+   usage();
+   $topic="help";
+ }
+ system("sed -n '/^#---.*${topic}.*\$/,/^#---\$/p' ${THISSCRIPT} | grep -v \"^#---\"");
+ return 0;
+}
+
+sub confirm {
+  my ($autoconfirm, $cmd) =@_;
+  if ($autoconfirm) { return 1; }
+
+  while(1) {
+    print "$cmd";
+    my $ans=<STDIN>;
+    chomp $ans;
+    if ( !$ans ) { $ans = "y"; }
+    if ( $ans eq "q" ) { print "Aborted\n"; exit(1); } 
+    if ( $ans eq "y" ) { return 1;}
+    if ( $ans eq "n" ) { print "Cancelled - no action\n"; return 0; }
+  }
+}
+
+sub verbose { if ($opt_verbose >=1 ) { print _trace()."$VERBOSETAG: " . shift . "\n"; } }
+sub notice { print _trace()."$NOTICETAG: " . shift . "\n"; }
+sub error { print _trace()."$ERRORTAG: " . shift . "\n"; }
+sub warning { print _trace()."$WARNINGTAG: " . shift . "\n"; }
+sub debug { if ($opt_debug >=1 ) { print _trace()."$DEBUGTAG: " . shift . "\n"; } }
+sub debug2 { if ($opt_debug >= 2 ) { print _trace()."$DEBUGTAG: DUMPER:\n"; print Dumper shift; } }
+sub usage { 
+  system ( "sed -n '/^# Usage:/,/^# -/p' $THISSCRIPT");
+  return 0;
+}
+
+# _trace used via verbose, so show caller of verbose()
+sub _trace {
+  return if ( $opt_trace == 0 );
+  my ($package, $filename, $line, $subroutine, $hasargs, $wantarray, $evaltext, $is_require, $hints, $bitmask) = caller(1);
+  my ($package1, $filename1, $line1, $subroutine1, $hasargs1, $wantarray1, $evaltext1, $is_require1, $hints1, $bitmask1) = caller(2);
+  return "${C_TRC}$$-$filename\[$line\] ${subroutine1}${C_NORM} : "
+}
+
+sub stack {
+        my $i=0;
+        my ($package, $filename, $line, $subroutine, $hasargs,
+                $wantarray, $evaltext, $is_require, $hints, $bitmask);
+        while ($i < 100)
+        {
+                ($package, $filename, $line, $subroutine, $hasargs,
+                        $wantarray, $evaltext, $is_require, $hints, $bitmask) = caller($i);
+                if ( ! defined $filename || ! defined $line || ! defined $subroutine )
+                {       last;
+                }
+                print "     Stack frame $i: $filename [ $line ] $subroutine \n";
+                $i++;
+        }
+        return 1;
+}
+
+sub trace {
+  return if ( $opt_trace == 0 );
+  print( _trace( join( " ", @_ )). "\n");
+}
+# trace point quick & dirty
+sub tp {
+  my $a=$opt_trace;
+  $opt_trace=3;
+  print( _trace().  join( " ", @_ ). "\n");
+  $opt_trace=$a
+}
+
+sub center($$$) {
+        my $txt=shift;
+        my $border=shift || $TAG;
+        my $padc=shift; 
+        if (! defined $padc ) {$padc=" "; } 
+
+        my $nctxt=$txt;
+        $nctxt =~ s/.\[[0-9;]*m//g;
+        my $ncborder=$border;
+        $ncborder =~ s/.\[[0-9;]*m//g;
+
+        my $nr=length( $nctxt);
+        if ( $nr % 2 == 1 ) {
+                $txt="$txt$padc";            # make even sized
+                $nr++;
+        }
+        my $max=80 - 2 * length($ncborder);
+        my $nrpad=($max - $nr)/2;
+        my $pad=sprintf( "$padc" x ${nrpad} );
+        return "${border}${pad}${txt}${pad}${border}";
+}
+
+
+sub debug3hex {
+    if ( $opt_debug < 3) {return; }
+    my $offset = 0;
+    my(@array,$format);
+    foreach my $data (unpack("a16"x(length($_[0])/16)."a*",$_[0])) {
+        my($len)=length($data);
+        if ($len == 16) {
+            @array = unpack('N4', $data);
+            $format="0x%08x (%05d)   %08x %08x %08x %08x   %s\n";
+        } else {
+            @array = unpack('C*', $data);
+            $_ = sprintf "%2.2x", $_ for @array;
+            push(@array, '  ') while $len++ < 16;
+            $format="0x%08x (%05d)" .
+               "   %s%s%s%s %s%s%s%s %s%s%s%s %s%s%s%s   %s\n";
+        } 
+        $data =~ tr/\0-\37\177-\377/./;
+        printf $format,$offset,$offset,@array,$data;
+        $offset += 16;
+    }
+}
+
+
+sub htmlencodePasswd {
+  my $x=shift;
+  $x=~ s/\%/\%25/g;   # percent first!
+  $x=~ s/\#/\%23/g;       
+  $x=~ s/\!/\%21/g;
+  $x=~ s/\$/\%24/g;
+  $x=~ s/\&/\%26/g;
+  $x=~ s/\'/\%27/g;
+  $x=~ s/\(/\%28/g;
+  $x=~ s/\)/\%29/g;
+  $x=~ s/\*/\%2A/g;
+  $x=~ s/\+/\%2B/g;
+  $x=~ s/\,/\%2C/g;
+  $x=~ s/\//\%2F/g;
+  $x=~ s/\:/\%3A/g;
+  $x=~ s/\;/\%3B/g;
+  $x=~ s/\=/\%3D/g;
+  $x=~ s/\?/\%3F/g;
+  $x=~ s/\@/\%40/g;
+  $x=~ s/\[/\%5B/g;
+  $x=~ s/\]/\%5D/g;
+  return $x;
+}
+
+sub _curl($$) {
+    my ($request,$url) = @_;
+    my $cmd;
+    my $returnJson;
+    my @pages=();
+    my $nextPageStart;
+    my $limit;
+
+    my $isLastPage = 1;
+    do {
+      my $args = "--insecure --request '$request' --url '$curlbaseurl$url'" ;
+
+      if (defined $nextPageStart) {
+        $args .= "?start=$nextPageStart\\&limit=$limit";
+      }
+      $cmd="curl $curlparm $args 2>/dev/null";  # silent
+
+      debug($cmd);
+      my $response=`$cmd`;
+      if ( $^O eq "os390") { 
+          # YAT-1833
+          if ( $response =~ /\*/ ) {
+            # print "$WARNINGTAG: response contains '*' ==> replaced by '#'\n";
+            $response =~ s/\*/x/g;
+          }
+      }
+      debug("--hexdata--");
+      debug3hex($response);
+      debug("--data--");
+      debug2($response);
+
+      debug("--json--");
+
+      my $json;
+      eval {
+        $json= decode_json $response;
+     };
+     if ($@) {
+        error "access to GIT server='$curltarget' failed for user='$user':\n";
+        my $x=$cmd; $x=~ s/:[^:\@]*\@/:<password>\@/;
+
+        $cmd="curl -v $args 2>&1";  # silent
+        my $fullresponse=`$cmd`;
+        error "request cmd: $x\n";
+        error "response: $fullresponse\n"; 
+        if ( $fullresponse =~  /< HTTP\/2 401/ ) {
+            error "HTTP 401 : Unauthorized\n";
+        } elsif ( $fullresponse =~  /< HTTP\/2 403/ ) {
+            error "HTTP 403 : Forbidden";
+        } elsif ( $fullresponse =~  /< HTTP\/2 404/ ) {
+            error "HTTP 404 : Not found";
+        } else {
+            error "cmd='$cmd' error processing response: $@\n";
+        }
+        exit(1);
+     }
+      debug2($json);
+      debug("----");
+      if ( ref($json) eq "HASH" && defined $json->{isLastPage} ) {
+        debug "PAGINATED! last=". $json->{isLastPage} . " start=".  $json->{start} . " nextPageStart=" . $json->{nextPageStart} ;
+        # 
+        my $p=$json->{values};
+        for my $page (@$p) {
+          push @pages, $page;
+        }
+        $returnJson=\@pages;
+        if ( $json->{isLastPage} == 0 ) {   # JSON false
+          $isLastPage=0;
+          $nextPageStart=$json->{nextPageStart};
+          $limit=$json->{limit};
+          if ($limit < 1000) { $limit=1000};
+        } else {
+          $isLastPage=1;
+        }
+      } else { 
+        $returnJson=$json;
+      }
+    } while ( ! $isLastPage );
+    return $returnJson;
+}
+
+#=======================================================================#
+#==END gutspl injection part == do not alter
+#=======================================================================#
+
+#==MAIN==
+my $pass;
+my $giteahost=$ENV{GTI_GITEA_HOST};
+my %project_preference=();  # project-> -project_level
+my $project_level=1;
+
+#-------------------------------------------------------------------------#
+# security functions
+#-------------------------------------------------------------------------#
+my @sec_entries=qw( **/uncrypted **/*.uncrypted **/unzipped **/*.unzipped **/*.fingerprint **/*.passphrase);
+sub _passphrase() {
+  if ($passphrase) {
+  return 1;
+  }
+
+  if ( ! $passphrase ) {
+    if ( -f ".passphrase" ) {
+      $passphrase=`cat .passphrase|gpg --batch -d --cipher-algo AES256 --passphrase \"$user\" -quiet`;
+      chomp $passphrase;
+    }
+  }
+  my $loop=1;
+  while ( $loop ) {
+    while ( ! $passphrase ) {
+      print "Enter passphrase: ";
+      $passphrase=<STDIN>;
+      chomp $passphrase;
+      last;
+    }
+    if ( $passphrase eq "q" ) {
+      error "abort";
+      return 0;
+    }
+    if (confirm($opt_ac, "$ASKTAG: use passphrase : '$passphrase'\n$ASKTAG: Confirm: [y]/n/q? : ")) {
+        last;
+    }
+    $passphrase="";
+  }
+  $passphrase =~ s/[\r\n]//g;
+  if ( $passphrase ) { 
+    if ( -f ".passphrase" ) { unlink ".passphrase";};
+    my $rc=system ( "echo \"$passphrase\" | gpg --batch -c --cipher-algo AES256 --passphrase \"$user\" -quiet -o \".passphrase\"" );
+    if ($rc == 0 ) { return 1; }
+  } 
+  return 0;     # 0 not ok
+}
+
+# per return: 0 not ok
+sub _sanity() {
+  my $rc;
+
+  # test if were in a git project
+  if ( ! $gitprojectdir ) {
+    error "No .git found, you'r not in a git project!";
+    return 0;   # not ok
+  }
+  # for security functions, test if we are at the top of a git project
+  if ( ! -d "$gitprojectdir/.git" ) {
+    error "No .git found, you'r not at the top of a git project!";
+    return 0;
+  }
+    if ( ! -f "$gitprojectdir/.gitignore" ) {
+      notice "adding .gitignore";
+      system( "> \"$gitprojectdir/.gitignore\"");
+      if ( $? != 0 ){ return 0; } # not ok 
+      system( "git add \"$gitprojectdir/.gitignore\"");
+      if ( $? != 0 ){ return 0; } # not ok 
+    }
+    my @ign=();
+    if ( ! open( IGN, "$gitprojectdir/.gitignore" ) ) {
+      error "could not open .gitignore";
+      return 0;
+    }
+    @ign= <IGN>;
+    close IGN;
+    my @newign=();
+    push @newign,@sec_entries;
+    my @toignore=();
+    push @toignore, @sec_entries;
+
+    for my $l (@ign) {
+      chomp $l;
+      my $m=0;
+      for my $x (@toignore) {
+        if ($l eq $x) { $m=1 };
+      }
+      next if ($m);
+      push @newign, $l;
+      if ( $l =~ /\/crypted\// ) {
+        my $a=$l;
+        $a =~ s=.*/crypted/=/uncrypted/=;                       # ign_uncrypted is list of items to be not added in git - in their uncrypted representation
+        $a =~ s=\.\*$==;
+        $a =~ s=\.gpg$==;                                       #
+        print "   ... set $a\n" ;
+        push @ign_uncrypted,$a;
+      }
+    }
+
+    if ( ! open( IGN, ">$gitprojectdir/.gitignore" ) ) {
+      error "could not wopen .gitignore : $!";
+      return 0;
+    }
+    for my $l (@newign) {
+      print IGN "$l\n";
+    }
+    close IGN;
+  return 1;     # ok 
+}
+
+# _traverse($path,$from,$to,$faction) 
+#   search $path for (sub)dirs named $from or *.$from
+#   and call $action_on_dir() on it
+sub _traverse {
+  my ($path,$from,$to,$action_on_dir) = @_;
+  return 0 if ( ! -d $path );
+  notice "_traverse($path,$from,$to, ..)";
+  opendir MYDIR, $path || return 1;
+  my @c=sort( readdir(MYDIR));
+  closedir MYDIR;
+  for my $c (@c) {
+    next if ( $c =~ /^\./ );
+    next if ( ! -d "$path/$c" );
+    next if ( $c =~ /\.$to/ || $c eq $to);
+    if ( $c =~ /\.$from/ || $c eq $from) {
+      my $frompath="$path/$c";
+      my $topath=$frompath; $topath=~s/$from$/$to/;
+      my $rc=&$action_on_dir($frompath,$topath);
+      return 1 if ($rc);
+      next;
+    } else {
+      my $rc = _traverse("$path/$c",$from,$to,$action_on_dir);
+      return 1 if ($rc);
+    }
+  }
+}
+
+# _process_dir($frompath,$topath,$action_on_dir) 
+#   process conditionally
+sub _process_dir($$$) {
+  my ($frompath,$topath,$action_on_dir)=@_;
+  notice "_process_dir($frompath,$topath, ..)";
+
+  my @fingerprints=();
+  if ( -f "$frompath/.fingerprint" ) {
+    open( MYFP, "$frompath/.fingerprint" );
+    @fingerprints=<MYFP>;
+    close MYFP;
+  }
+  my $rc = _r_process_dir(undef, $frompath,$topath,\@fingerprints,$action_on_dir);
+  return 1 if ($rc);
+  return 0;
+}
+sub _r_process_dir($$$$) {
+  my ( $rp, $frompath,$topath,$fprints,$action_on_dir)=@_;
+  return &$action_on_dir($frompath,$topath);
+}
+
+
+# _r_fingerprint
+#    read fingerprints if any
+my @fingerprints=();
+sub _r_fingerprint {
+  my ($path)=@_;
+  @fingerprints=();
+  if ( open( MYFP, "$path/.fingerprint" )) {
+      @fingerprints=<MYFP>;
+      close MYFP;
+  }
+  return 0;
+}
+
+sub _t_fingerprint {
+  my ($path,$rp)=@_;      # rp starts with /
+  return 0 if ( $opt_force );
+  my $ap="$path$rp"; 
+  my $mtime=stat($ap)->ctime;
+  my $issame=0;
+  for my $e (@fingerprints) {
+    my ( $n,$ctime ) = split /:/,$e;
+    next if ( $n ne $rp );
+    chomp $ctime;
+    if ( $mtime eq $ctime ) { $issame = 1; };
+    last;
+  }
+  #if ( $issame == 1 ) { tp( "$path$rp : is same"); }
+  #else { tp( "$path$rp : changed/new"); }
+
+  return $issame;       # 1 for same , 0 for changed/new
+}
+
+
+# _w_fingerprint
+#   write path/.fingerprint file to reflect status of created files to detect changes
+sub _w_fingerprint($) {
+  my ($path)=@_;
+  notice "_w_fingerprint: $path/.fingerprint";
+  my @fps=();
+  _r_get_fp($path, "", \@fps);
+
+  open( MYFP, ">$path/.fingerprint" ) || return 1;
+  for my $l (@fps) {
+      print MYFP "$l\n";
+  }
+  close MYFP;
+  return 0;
+}
+sub _r_get_fp($$$) {
+  my ($p, $rp, $pfps) = @_;
+  my $ap="$p$rp";
+
+  if ( -f $ap ) {
+    my $ctime=stat($ap)->ctime;
+    push ( @$pfps, "$rp:$ctime");
+  } elsif ( -d $ap ) {
+    opendir MYDIR, $ap || die;
+    my @c=sort( readdir MYDIR );
+    closedir MYDIR;
+    for my $c (@c) {
+      next if ( $c =~ /^\./ );
+     _r_get_fp($p, "$rp/$c", $pfps);
+    }
+  }
+}
+
+#-------------------------------------------------------------------------#
+#--- w wrap 
+# gti wrap 
+#     Basically: crypt followed by zip
+#     Note that a x.uncrypted folder may be in a y.unzipped folder.
+#     The resulting y.zipped will only contain the x.crypted folder.
+#---
+#-------------------------------------------------------------------------#
+sub cmd_wrap {
+ _sanity || return 1;
+ my (@args)=@_;
+ my $rc;
+ $rc = cmd_crypt( @args );
+ return 1 if ($rc);
+ $rc = cmd_zip( @args );
+ return 1 if ($rc);
+ return 0;
+}
+
+#-------------------------------------------------------------------------#
+#--- uw unwrap 
+# gti unwrap 
+#     Basically: unzip followed by uncrypt 
+#     Note that a y.zipped may expand to y.unzipped containing some x.crypted folder, 
+#     which will expand to a x.uncrypted folder
+#---
+#-------------------------------------------------------------------------#
+sub cmd_unwrap {
+ _sanity || return 1;
+ my (@args)=@_;
+ my $rc;
+ $rc = cmd_unzip( @args );
+ return 1 if ($rc);
+ $rc = cmd_uncrypt( @args );
+ return 1 if ($rc);
+ return 0;
+}
+
+#-------------------------------------------------------------------------#
+#--- c crypt 
+# gti [--noskip] crypt 
+#     The current dir is search for a x.uncrypted folder. If found, a x.crypted 
+#     folder is created containing the ..gpg resulting files. 
+#     Folders with xxxx.skip names are skipped.
+#---
+#-------------------------------------------------------------------------#
+my $c_crypt_cnt_updated=0;
+my $c_crypt_cnt_same=0;
+
+sub _do_crypt_dir {
+  my ($fp,$tp)=@_;
+  my $rc;
+  notice "crypt dir $fp";
+  $rc = _r_fingerprint($fp);
+  return 1 if ($rc);
+
+  # find all files 
+  $rc=_r_do_crypt_dir($fp,$tp,"");
+  return 1 if ($rc);
+
+  # update the uncrypted fingerprint 
+  $rc = _w_fingerprint($fp);
+  return 1 if ($rc);
+  return 0;
+}
+sub _r_do_crypt_dir {
+  my ($fp,$tp,$rp)=@_;
+  my $ap="$fp$rp";
+
+  for my $i (@ign_uncrypted) {
+      if ( $ap =~ /$i/ ) {
+              return 0;
+      }
+  }
+
+  opendir( MYDIR, $ap) || die;
+  my @e=sort(readdir(MYDIR));
+  closedir(MYDIR);
+  for my $e (@e) {
+    next if ($e =~/^\./ );
+    next if ( $opt_noskip == 0 && $e =~/\.skip$/ );
+    if ( -d "$ap/$e" ) {
+      my $rc=_r_do_crypt_dir($fp,$tp,"$rp/$e");
+      return 1 if ($rc);
+    }
+    if ( -f "$ap/$e" ) {
+      my $rc;
+      $rc = _t_fingerprint( $fp, "$rp/$e" );
+      if ( $rc == 0 || ! -f "$tp$rp/$e.gpg" ) {
+        # changed or new or .gpg disappeared
+        $rc=_do_crypt_file($fp,$tp,"$rp/$e");
+        return 1 if ($rc);
+      } else {
+        notice( "   $fp$rp/$e -> $tp$rp/$e.gpg up-to-date" );
+        $c_crypt_cnt_same++;
+      }
+    }
+  }
+}
+sub _do_crypt_file {
+  my ($fp,$tp,$rp)=@_;
+
+  for my $i (@ign_uncrypted) {
+        print "   ... $i against $fp$rp\n" ;
+        if ( "$fp$rp"  =~ /$i/ ) {
+                return 0;
+        }
+  }
+
+  notice ( "   $fp$rp -> $tp$rp.gpg crypting ...");
+  my $todir=dirname("$tp$rp");
+  if ( ! -d $todir ) { make_path( $todir ) || return 1; }
+  $c_crypt_cnt_updated++;
+  my $dec="$fp$rp";
+  my $enc="$tp$rp.gpg";
+  if ( -f $enc ) { unlink $enc || return 1; }
+  shellCmd( "cat \"$dec\" | gpg --batch -c --cipher-algo AES256 --passphrase \"$passphrase\" -quiet -o \"$enc\"" ) || return 1;
+  return 0 ;  
+}
+
+sub cmd_crypt {
+ _sanity() || return 1;
+ _passphrase() || return 1;
+ my (@args)=@_;
+ my $rc=_traverse( realpath(getcwd()) , "uncrypted", "crypted", \&_do_crypt_dir );
+ if ( $rc ) {
+  error ( "crypt: same: $c_crypt_cnt_same updated: $c_crypt_cnt_updated : NOT OK");
+ } else {
+  notice ( "crypt: same: $c_crypt_cnt_same updated: $c_crypt_cnt_updated : OK");
+ }
+ return $rc;
+}
+
+#-------------------------------------------------------------------------#
+#--- uk uncrypt
+# gti [--noskip] uncrypt 
+#     The current dir is search for a x.crypted folder. If found, a x.uncrypted 
+#     folder is created containing the uncrypted files. 
+#     Folders with xxxx.skip names are skipped.
+#     A .fingerprint file is generated to keep track of changed files for the
+#     next crypt action.
+#---
+#-------------------------------------------------------------------------#
+my $c_uncrypt_cnt_updated=0;
+sub _do_uncrypt_dir {
+  my ($fp,$tp)=@_;
+  notice "uncrypt dir $fp";
+  my $rc;
+
+  # find all files 
+  $rc=_r_do_uncrypt_dir($fp,$tp,"");
+  return 1 if ($rc);
+
+  # fingerprint the uncrypted stuff
+  $rc = _w_fingerprint($tp);
+  return 1 if ($rc);
+  return 0;
+}
+sub _r_do_uncrypt_dir {
+  my ($fp,$tp,$rp)=@_;
+  my $rc;
+  my $ap="$fp$rp";
+  if ( ! opendir( MYDIR, $ap) ) {
+	  error( "failed to open $ap : $!" );
+	  return 1;
+  } 
+  my @e=sort(readdir(MYDIR));
+  closedir(MYDIR);
+  for my $e (@e) {
+    next if ($e =~/^\./ );
+    next if ( $opt_noskip == 0 && $e =~/\.skip$/ );
+    if ( -d "$ap/$e" ) {
+      my $rc=_r_do_uncrypt_dir($fp,$tp,"$rp/$e");
+      return 1 if ($rc);
+    }
+    if ( -f "$ap/$e" ) {
+      next if ( $e !~ /\.gpg$/ );
+      $rc=_do_uncrypt_file($fp,$tp,"$rp/$e");
+      return 1 if ($rc);
+    }
+  }
+}
+sub _do_uncrypt_file {
+  my ($fp,$tp,$rp)=@_;
+  my $drp=$rp;
+  $drp =~ s/\.gpg$//;
+  notice ( "   $fp$rp -> $tp$drp uncrypting ...");
+  my $todir=dirname("$tp$drp");
+  if ( ! -d $todir ) { make_path( $todir ) || return 1; }
+  $c_uncrypt_cnt_updated++;
+  my $enc="$fp$rp";
+  my $dec="$tp$drp";
+  if ( -f $dec ) { unlink $dec || return 1; }
+  shellCmd( "cat \"$enc\" | gpg --batch -d --cipher-algo AES256 --passphrase \"$passphrase\" -quiet -o \"$dec\"" ) || return 1;
+  return 0;
+}
+sub cmd_uncrypt {
+ _sanity || return 1;
+ _passphrase() || return 1;
+ my (@args)=@_;
+ my $rc=_traverse( realpath(getcwd()) , "crypted", "uncrypted", \&_do_uncrypt_dir );
+ if ( $rc ) {
+  error ( "uncrypt: updated: $c_uncrypt_cnt_updated : NOT OK");
+ } else {
+  notice ( "uncrypt: updated: $c_uncrypt_cnt_updated : OK");
+ }
+ return $rc;
+}
+#-------------------------------------------------------------------------#
+#--- z zip 
+# gti zip 
+#     The current dir is search for a x.unzipped folder. If found, a x.zipped 
+#     folder is created containing the maxed sized split zip archive.
+#---
+#-------------------------------------------------------------------------#
+my $c_zip_cnt_updated=0;
+my $c_zip_cnt_same=0;
+
+sub _do_zip_dir {
+  my ($fp,$tp)=@_;
+  my $rc;
+  notice "zip dir $fp";
+  $rc = _r_fingerprint($fp);
+  return 1 if ($rc);
+
+  my $needrezip=0;
+  my $b=basename($tp); $b=~s/\.zipped$//;
+  my $tozip="$tp/$b.zip";
+  if ( $opt_force ) {
+    $needrezip=1;
+  } else {
+    if ( ! -f $tozip ) {
+      $needrezip=1;
+    } else {
+      $needrezip=_r_do_test_zip_dir($fp,"");
+    }
+  }
+ 
+  if ($needrezip) {
+    $rc=_do_zipcmd_dir( $fp, $tp, $b );
+    return 1 if ($rc);
+    # update the unzipped fingerprint 
+    $c_zip_cnt_updated++;
+    $rc = _w_fingerprint($fp);
+    return 1 if ($rc);
+  } else {
+    notice "no rezip";
+  }
+  return 0;
+}
+
+# test if anything in unzipped has changed
+# returns 1 for changed
+sub _r_do_test_zip_dir {
+  my ($fp,$rp)=@_;
+
+  # check from (unzipped) dir, test against fingerpring
+  my $ap="$fp$rp";
+  opendir( MYDIR, $ap) || die;
+  my @e=sort(readdir(MYDIR));
+  closedir(MYDIR);
+  for my $e (@e) {
+      next if ($e =~/^\./ );
+      if ( -d "$ap/$e" ) {
+        my $rc=_r_do_test_zip_dir($fp,"$rp/$e");
+        return 1 if ($rc);
+      }
+      if ( -f "$ap/$e" ) {
+        my $rc;
+        $rc = _t_fingerprint( $fp, "$rp/$e" );
+        if ( $rc == 0 ) {
+          # changed or new 
+          return 1;
+        } else {
+          notice( "   $fp$rp/$e unchanged" );
+          $c_zip_cnt_same++;
+        }
+      }
+   }
+}
+
+my $splitsize="50m";
+sub _do_zipcmd_dir {
+  my( $fp, $tp, $base )=@_;
+
+  shellCmd( "rm -rf \"$tp\"" ) || return 1;
+  make_path( $tp ) || return 1; 
+
+  notice( "   zipping into $tp/FULL.zip.partXX ...");
+  shellCmd( "cd \"$fp\" && zip -e -P \"$passphrase\" -x '*.uncrypted' -x '*.fingerprint' -r \"$tp/FULL.zip\" . " ) || return 1;
+  shellCmd( "cd \"$tp\" && cat FULL.zip | split -b $splitsize - FULL.zip.part" ) || return 1;
+  shellCmd( "rm \"$tp/FULL.zip\"" ) || return 1;
+  return 0;
+}
+
+sub cmd_zip {
+ _sanity() || return 1;
+ _passphrase() || return 1;
+ my (@args)=@_;
+ my $rc=_traverse( realpath(getcwd()) , "unzipped", "zipped", \&_do_zip_dir );
+ if ( $rc ) {
+  error ( "zip: NOT OK");
+ } else {
+  if ( $c_zip_cnt_updated ) {
+    notice ( "zip: changed OK");
+  } else {
+    notice ( "zip: unchanged ($c_zip_cnt_same) OK");
+  }
+ }
+ return $rc;
+}
+
+#-------------------------------------------------------------------------#
+#--- unzip 
+# gti unzip 
+#     The current dir is search for a x.zipped folder. If found, the split files
+#     are concatenated and the zip is expanded to x.unzipped.
+#     A .fingerprint file is generated to keep track of changed files for the
+#     next zip action.
+#---
+#-------------------------------------------------------------------------#
+my $c_unzip_cnt_updated=0;
+sub _do_unzip_dir {
+  my ($fp,$tp)=@_;
+  notice "unzip dir $fp";
+  my $rc;
+
+  my $b=basename($fp); $b=~s/\.zipped$//;
+  my $fromzip="$fp/FULL.zip.partaa";
+
+  if ( ! -f $fromzip ) { 
+    error ("no file '$fromzip'");
+    return 1;
+  }
+
+  $rc=_do_unzipcmd_dir( $fp, $tp, $b );
+  return 1 if ($rc);
+
+  # fingerprint the unzipped stuff
+  $rc = _w_fingerprint($tp);
+  return 1 if ($rc);
+  return 0;
+}
+
+sub _do_unzipcmd_dir {
+  my( $fp, $tp, $base )=@_;
+  my $cmd;
+  my $rc;
+
+  notice( "   unzipping $fp/$base.zip ...");
+
+  # concat spit zips
+  opendir( MYDIR, $fp) || return 1;
+  my @e=readdir MYDIR;
+  closedir MYDIR;
+  my $zips="" ;
+  for my $e (@e) {
+    next if ( $e !~ /^$base.z/ );
+    next if ( $e =~ /\.zip$/ );
+    $zips .= " ". $e;
+  }
+  $zips .= " $base.zip";
+  shellCmd("rm -rf \"$tp\"") || return 1;
+  shellCmd("mkdir -p \"$tp\"") || return 1;
+  shellCmd("cd \"$fp\" && cat FULL.zip.part* > FULL.zip") || return 1;
+  shellCmd("cd \"$tp\" && unzip -P \"$passphrase\" \"$fp/FULL.zip\" && rm \"$fp/FULL.zip\"") || return 1;
+  return 0;
+
+}
+
+# perl return value 1=OK;
+sub shellCmd {
+  my ($cmd)=@_;
+  verbose("shellCmd: $cmd");
+  system($cmd);
+  my $rc=$?;
+  return $rc == 0;
+  return 0;
+}
+
+sub cmd_unzip {
+ _sanity || return 1;
+ _passphrase() || return 1;
+ my (@args)=@_;
+ my $rc=_traverse( realpath(getcwd()) , "zipped", "unzipped", \&_do_unzip_dir );
+ if ( $rc ) {
+  error ( "unzip: NOT OK");
+ } else {
+  notice ( "unzip: OK");
+ }
+ return $rc;
+}
+#-------------------------------------------------------------------------#
+#--- wipe 
+# gti wipe 
+#     Wipe security data (.passphrase, .fingerprint, x.unzipped, x.uncrypted)
+#---
+#-------------------------------------------------------------------------#
+sub cmd_wipe {
+ _sanity || return 1;
+ my (@args)=@_;
+
+ my $rc=_r_wipe_dir(realpath(getcwd()));
+ if ( $rc ) {
+  error ( "wipe: NOT OK");
+ } else {
+  notice ( "wipe: OK");
+ }
+ return $rc;
+}
+
+sub _r_wipe_dir {
+  my ($p) = @_;
+  opendir MYDIR, $p || return 1;
+  my @e=sort(readdir MYDIR);
+  closedir MYDIR;
+  for my $e (@e) {
+    my $wiped=0;
+    for my $s (@sec_entries) {
+      my $ss=$s;
+      $ss =~ s/.*[\/\*]//;
+      if ($e =~ /$ss$/) {
+        my $rc= _r_wipe_file("$p/$e");
+        if ( $rc ) { return 1; }
+        $wiped=1;
+        last;
+      }
+    }
+    next if ( $wiped );
+    next if ( $e =~ /^\./ );
+    next if ( ! -d "$p/$e" );
+    my $rc=_r_wipe_dir("$p/$e");
+    if ( $rc ) { return 1; }
+  }
+}
+sub _r_wipe_file {
+  my ($fp) = @_;
+  notice "wipe $fp";
+  shellCmd("find \"$fp\" -type f -exec shred {} \\;") || return 1;
+  my $rc=$?;
+  if ( $rc == 0 ) {
+    shellCmd("rm -rf \"$fp\"") || return 1;
+    $rc=$?;
+  }
+  return $rc;
+}
+
+#-------------------------------------------------------------------------#
+#--- config 
+# gti config
+#   Display config information.
+#---
+#-------------------------------------------------------------------------#
+sub cmd_config {
+ notice( "settings");
+ my $i=`whoami`;
+ chomp $i;
+ notice( "whoami=$i");
+ notice( "GTI_USER=".($ENV{GTI_USER} || "?") ) ;
+ my $dcurlparm=$curlparm;
+ $dcurlparm =~ s/:[^\/]*/:\*\*\*/;
+ notice "curlparm=$dcurlparm";
+ notice "curlbaseurl=$curlbaseurl";
+  for my $e (qw( http_proxy HTTP_PROXY https_proxy HTTPS_PROXY)) {
+    if ( $ENV{$e} ) {
+      notice("$e=$ENV{$e}");
+    }
+  }
+ if ( $gitprojectdir ) {
+    my $x="$gitprojectdir/.git/config"; 
+    if ( -f $x ) { notice($x); system( "cat \"$x\"" ); }
+ }
+ my $x="$ENV{HOME}/.gitconfig"; 
+ if ( -f $x ) { notice($x); system( "cat \"$x\"" ); }
+
+}
+
+
+#-------------------------------------------------------------------------#
+#--- help ?
+# gti help [--all|gti|<command>]
+#   Display help information.
+#   Prints info between '#---<space>[topic]$" and "#---" markers.
+#   Display help information.
+#---
+#-------------------------------------------------------------------------#
+sub cmd_help {
+ return common_help(@_);
+}
+
+sub doinit() {
+  if ( common_init() != 0 ) { return 1;}
+  verbose("gti init");
+
+  $org=$ENV{TF_ORGANIZATION};
+  $certauth="odc${org}g1";
+  $domext=$ENV{TF_DOMEXT};
+
+  if ( hostfqdn() =~ /$org/i ) {
+    # in context of this organization
+    if ( ! $ENV{GTI_GITEA_HOST} ) { $ENV{GTI_GITEA_HOST} = "guts.$org.$domext"; }
+    $bb_match = "git.$org";
+  }
+
+  # find if we are in a .git project
+  my $p=realpath( getcwd() );
+  my $op='';
+  while ( $p ne $op ) {
+    if ( -d "$p/.git" ) {
+      $gitprojectdir=$p;
+      verbose "gitprojectdir=$p";
+      last;
+    }
+    $op=$p;
+    $p=dirname($p);
+  }
+  if ( $gitprojectdir ) {
+      open(CONF, "$gitprojectdir/.git/config" ) || return 1;
+      my $l;
+      while ($l = <CONF> ) {
+        next if ( $l !~ /\surl\s*=/);
+        chomp $l;
+        $l=~ s/.*=\s*//;
+        $gitprojecturl=$l;
+        verbose "gitprojecturl="._sec("$l");
+        last
+      }
+      close CONF;
+
+      if ($target ) {    # check
+        if ( $gitprojecturl !~ /.*$target.*/ ) {
+          error ("target '$target' does not match .git config url = ". _sec($gitprojecturl)) ;
+          return 1;
+        }
+      } else {           # autoset target
+          if ( $gitprojecturl =~ /$github_match/ ) { $target="github";}
+          elsif ( $gitprojecturl =~ /$gitea_match/ ) { $target="gitea";}
+          elsif ( $gitprojecturl =~ /$bb_match/ ) { $target="bitbucket";}
+          else { 
+            tp($bb_match);
+             error ("dunno bout target for $gitprojecturl" ) ;
+             return 1;
+          }
+          verbose "target set to $target for this project"
+      }
+  }
+
+  if ( ! $target ) { $target = $ENV{GTI_TARGET} || "bitbucket"; }
+  if ( $target !~ /(bitbucket|gitea|github)/ ) { usage_exit("target is not bitbucket(bb) or gitea(gt) or github(gh)"); }
+
+  $curltarget=$target;
+
+  $pass=$ENV{GTI_PASSWD} || $ENV{GTI_PASSWORD};
+  $gti_user=$ENV{GTI_USER};
+  if ( ! $gti_user ) { $gti_user=$ENV{USER} } ;
+  if ( $^O eq "os390") { 
+    $gti_user = lc($gti_user);      
+  }
+  if ( !$pass ) {
+      my @ee=();
+      if ( open NETRC, $ENV{HOME}."/.netrc") {
+          @ee=<NETRC>;
+          close NETRC;
+      }
+      for my $e (@ee) {
+        if ( 
+          ( $target eq "bitbucket" &&  $e =~ /^machine\s+(bitbucket)\s+login\s+/i ) 
+        ||
+          ( $target eq "gitea" &&  $e =~ /^machine\s+(gitea)\s+login\s+/i ) 
+        ||
+          ( $target eq "github" &&  $e =~ /^machine\s+(github)\s+login\s+/i ) 
+        ) {
+            chomp $e;
+            $pass=$e;
+            $pass =~ s/.*password\s+//;
+            $pass =~ s/\s.*//;
+            $user=$e;
+            $user =~ s/.*login\s+//;
+            $user =~ s/\s.*//;
+            # allow multiple entries, selectable by GTI_USER
+            if ( $gti_user ne $user ) {
+              #skip;
+              $pass=undef;
+              $user=undef;
+            }
+            if ( $pass ) { last; }
+        }
+      }
+  }
+  if ( ! $pass ) { $pass_missing=1; };   # postphone error message to allow help request
+  $pass=htmlencodePasswd($pass);
+
+  if ( hostfqdn() =~ /$org/i ) {
+    # proxysettings in context of this organization
+    if ($target =~ /github/i ) { 
+        if ( $^O eq "linux" ) {
+              if ( ! $ENV{https_proxy} ) {
+                $ENV{https_proxy}="http://proxyserver.${org}.$domext:8080";
+              }
+        } else {
+              # on cygwin (VDI) - set proxy
+              if ( ! $ENV{https_proxy} ) {
+                $ENV{https_proxy}="http://proxyproefunbulk:8080";
+              }
+        }
+    }
+    if ($target =~ /bitbucket/i ) { 
+      $mandatory_branch="develop";
+    }
+  }
+
+  if ( $target =~ /bitbucket/i ) {
+    #$curlbaseurl="https://$user:$pass\@devtools.$org.$domext/bitbucket/rest/api/1.0";
+    $curlbaseurl="https://$user:$pass\@bitbucket.$org.$domext/rest/api/1.0";
+  } elsif ($target =~ /gitea/i ) { 
+    $curlbaseurl="https://$user:$pass\@$giteahost/gitea/api/v1";
+  } elsif ($target =~ /github/i ) { 
+    $curlparm="-u $user:$pass";
+    $curlbaseurl="https://api.github.com";
+  } else { 
+    error("target is not bitbucket(bb) or gitea(gt) or github(gh)"); 
+    doexit(1);
+  }
+
+  if ( $ENV{GTI_PROJECT_PREFERENCE} ) {
+      for my $project ( split /\s+/, $ENV{GTI_PROJECT_PREFERENCE} ) {
+        $project_preference{ $project } = - $project_level; $project_level++;
+      }
+  }
+  return 0;
+}
+
+sub doexit($) {
+  my ($rc)=@_;
+  exit($rc);
+}
+
+#--------------------------------------------------------------#
+#--- check 
+# check (my account)
+# gti check 
+#   Display account information.
+#---
+#-------------------------------------------------------------------------#
+sub cmd_check() {
+  if ($target eq "bitbucket" ) { return bitbucket_check(); }
+  if ($target eq "gitea") { return gitea_check(); }
+  if ($target eq "github") { return github_check(); }
+  ERROR( "no support for $target" );
+  return 1
+}
+
+sub gitea_check() {
+  my $r=_curl("GET", "/users/$user");
+  print Dumper($r);
+}
+
+sub bitbucket_check() {
+  my $r=_curl("GET", "/users/$user");
+  print Dumper($r);
+}
+
+sub github_check() {
+ if ( hostfqdn() =~ /$org/i ) {
+  # in organization context
+  my $error=0;
+  my $update=0;
+  my @certs=();
+  push(@certs, "${certauth}rootca.crt" );
+  push(@certs, "linuxcag1.crt" );
+  for my $crt ( @certs ) {
+    if ( ! -f "/etc/pki/ca-trust/source/anchors/$crt" ) {
+      $update=1;
+      system("curl -sL http://pki.${org}.$domext/${certauth}/$crt > /etc/pki/ca-trust/source/anchors/$crt");
+      if ( $? != 0 ) {
+        error "could not get certificate $crt";
+        $error++;
+        system( "rm -rf /etc/pki/ca-trust/source/anchors/$crt" );
+      } else {
+        verbose "$crt installed";
+      }
+    } else {
+        verbose "$crt already installed";
+    }
+  }
+  if ($update) {
+      system("update-ca-trust");
+      if ( $? != 0 ) {
+        error "could not update-ca-trust";
+        $error++;
+      } else {
+        verbose "update-ca-trust OK";
+      }
+  }
+  if ( $error ) { return 1; } 
+ }
+
+  # needs certificates...
+  #
+  # curl -sL http://pki.${org}.$domext/${certauth}/${certauth}rootca.crt >/etc/pki/ca-trust/source/anchors/${certauth}rootca.crt && update-ca-trust
+  # curl -sL http://pki.${org}.$domext/${certauth}/linuxcag1.crt >/etc/pki/ca-trust/source/anchors/linuxcag1.crt  && update-ca-trust
+  #notice "/users/$user";
+  my $r=_curl("GET", "/users/$user");
+  print Dumper($r);
+  #notice "/organizations";
+  #my $r=_curl("GET", "/organizations");
+  #print Dumper($r);
+  return 0;
+}
+
+# hide passwd in url
+sub _sec {
+  my $cmd=shift;
+  $cmd =~ s/:[^\/]*@/:\*\*\*@/;
+  return $cmd;
+}
+
+#--------------------------------------------------------------#
+#--- repos 
+# gti repos [-p <project>][-u <user>][[-n] <namepattern>][-c]     # list repositories available to THIS USER
+#                          # -p <project for selective by project
+#                          # -u <user> for selective by userrepositories
+#                          # -n <pattern> for filter (-n can be omitted) 
+#                          # -c for git clone
+#                          # -f <file> get file from remote repo to stdout
+#                          # -F <file> get file from remote repo to local file 
+#                          # -t get tags
+#                          # -q no verbose, implies autoconfirm
+#                          # -v <version> : version
+#                          # -h : use html url in stead of ssh url
+#    clone|co              # same as 'repos -c'
+#---
+#--------------------------------------------------------------#
+sub cmd_repos {
+  my @args =@_;
+
+  my $project;
+  my $repo_user = $ENV{GTI_USER};
+  my $name;
+  my $clone;
+  my $tags;
+  my $getfile;
+  my $getfileLocal=0;
+  my $autoconfirm=$opt_ac;
+  my $action;
+  my $actions=0;
+  my $quiet=0;
+  my $version="HEAD";
+  my $use_http=0;
+  my $use_exact_match = 1;
+  while ($args[0]) {
+    if ($args[0] eq "-p" ) { 
+        $project = $args[1];
+        shift @args;
+        shift @args;
+    } elsif ($args[0] eq "-u" ) { 
+        $repo_user = $args[1];
+        shift @args;
+        shift @args;
+    } elsif ($args[0] eq "-n" ) { 
+        $name = $args[1];
+        shift @args;
+        shift @args;
+    } elsif ($args[0] eq "-f" ) { 
+        $action = "getfile";
+        $actions++;
+        $getfile = $args[1];
+        shift @args;
+        shift @args;
+    } elsif ($args[0] eq "-F" ) { 
+        $action = "getfile";
+        $actions++;
+        $getfile = $args[1];
+        shift @args;
+        shift @args;
+        $getfileLocal=1;
+    } elsif ($args[0] eq "-v" ) { 
+        $version = $args[1];
+        shift @args;
+        shift @args;
+    } elsif ($args[0] eq "-c" ) { 
+        $action = "clone";
+        $actions++;
+        $clone = 1;
+        shift @args;
+    } elsif ($args[0] eq "-t" ) { 
+        $action = "tags";
+        $actions++;
+        $tags = 1;
+        shift @args;
+    } elsif ($args[0] eq "-a" ) { 
+        $autoconfirm = 1;
+        shift @args;
+    } elsif ($args[0] eq "-h" ) { 
+        $use_http = 1;
+        shift @args;
+    } elsif ($args[0] eq "-nem" ) { 
+        $use_exact_match = 0;
+        shift @args;
+    } elsif ($args[0] eq "-q" ) { 
+        $quiet = 1;
+        $autoconfirm = 1;
+        shift @args;
+    } else {
+        last;
+    }
+  }
+  if ( @args == 1 && ! $name ) {
+      $name=$args[0];
+      shift @args;
+  }
+
+  # from genman sbx create, the reading of the CDF fils is done via the gitpath ( /<project>/<name>.git )
+  if ( $name =~ /.*\.git$/ ) {
+   my $oname=$name;
+   # split up /<project>/<name>.git
+   my $pre; my $rest;
+   ($pre, $project, $name, $rest) = split /[\/\.]/, $name;
+   verbose( "map input $oname to : project=$project name=$name");
+  }
+
+  if ( @args ) { error "don't now what to do with args '". join(" ", @args)."'\n"; return;}
+
+  if ($actions > 1) { error "can do only one action at a time\n"; return;}
+
+  my $hpaths;
+  if ($target eq "bitbucket" ) { $hpaths=bitbucket_repos($project,$repo_user,$use_http); }
+  if ($target eq "gitea") { $hpaths=gitea_repos($project,$repo_user,$use_http); }
+  if ($target eq "github") { $hpaths=github_repos($repo_user); }
+
+  my %name_to_path;       # names may not be unique
+  my %name_to_filtered;       # names may not be unique
+  my @exact_select=();
+  for my $path (sort keys %$hpaths) {
+    if ( $name ) {
+      my $x=basename($path);
+      if ( $use_exact_match == 1 && $x eq $name ) {
+        push (@exact_select,$path);
+      }
+    }
+
+    if ( !$name || $path =~ /$name/i ) {
+      my $e=$hpaths->{$path};
+      my $name=$e->{name};
+      if ( ! $name_to_path{$name} ) {
+        my @o=();
+        $name_to_path{$name}=\@o;
+      }
+      my $p=$name_to_path{$name};
+      push(@$p,$path);
+    }
+  }
+
+  #print Dumper(\%name_to_path);
+  if ( keys(%project_preference) ) {
+    #  print Dumper(\%project_preference); 
+    for my $name (sort keys %name_to_path) {
+      my $p=$name_to_path{$name};
+      my $nr=@$p;
+      if ( $nr <= 1) { next; }
+      $name_to_filtered{$name}=$nr;
+      my @o=();
+      $name_to_path{$name}=\@o;
+
+      my $filtered='';
+      my $filtered_level=-1000;
+      for my $path( @$p) {
+        my $project=$path; $project =~ s/\/[^\/]*$//; $project =~ s/^\///;
+        if ( ! defined $project_preference{ $project }  ) { $project_preference{ $project } = - $project_level; };  # not mentioned project:lowest prio
+        #    print "project=$project\n";
+        #print Dumper(\@o);
+        #print " == fl=$filtered_level cl=$project_preference{ $project }\n";
+
+        if ( $filtered_level > $project_preference{ $project } ) { 
+          # already saved prio is higher 
+          next;
+        } elsif ( $filtered_level == $project_preference{ $project } ) { 
+          # already saved prio is same 
+          push(@o, $path);
+        } else  {    # ( $filtered_level < $project_preference{ $project } ) 
+          # already saved prio is lower, start anew
+          @o=(); 
+          push(@o, $path);
+          $filtered_level= $project_preference{ $project };
+        }
+      }
+    }
+  }
+  #print Dumper(\%name_to_path);
+
+  my @select=();
+  my $ix_txt = "";
+  if ($clone) {
+     $ix_txt = "    ";
+  }
+  if ( ! $quiet) {printf( "$ix_txt%-40s %-20s %s\n", "repository", "project", "git-clone-url");}
+  if ( ! $quiet) {printf( "$ix_txt%-40s %-20s %s\n", "----------", "-------", "-------------");}
+  my $normal_format="%-40s %-20s %s";
+  my $select_format="${C_DEB}%-40s${C_NORM} %-20s %s";
+  for my $name (sort keys %name_to_path) {
+    my $p=$name_to_path{$name};
+    for my $path( @$p) {
+      my $format=$normal_format;
+      my $e=$hpaths->{$path};
+      my $ix_name=$name;
+      if ($action) {
+        push(@select, $path);
+        my $nr= @select;
+        if ( @exact_select == 1 && $exact_select[0] eq $path ) {
+           $format=$select_format;
+        } 
+        $ix_txt=sprintf( "%2d) ", $nr);
+      }
+      my $project=$path; $project =~ s/\/[^\/]*$//; $project =~ s/^\///;
+      my $fm="";
+      if ( defined $name_to_filtered{$name} ) {
+        $fm=" (filtered from: $name_to_filtered{$name})";
+      }
+      if ( ! $quiet) {printf( "$ix_txt$format $fm\n", $ix_name, $project, $e->{url});}
+    }
+  }
+
+  if ( !$action ) {  return; }
+
+  my $ix=0;
+  my $ans;
+  if ( @select == 0 ) {
+      error "no repository (in $target) for action '$action'.\n";
+      return;
+  }
+  if ( @exact_select == 1 ) {
+          @select=();
+          push( @select,$exact_select[0] );
+  }
+
+  if ( @select == 1 ) {
+      $ans=0;
+  } else {
+      if ( $quiet ==1 ) {
+          error "no single repository selected for action '$action'.\n";
+          return;
+      }
+      print"\n\n which repository? : ";
+      $ans=<STDIN>;
+      if ( $ans !~ /^\d+$/ || $ans <= 0 || $ans > @select ) {
+        if ( $ans =~ /q/i ) { print "abort - no action\n"; return; }
+        error "not a valid number - no action\n";
+        return;
+      }
+      $ans--;
+  }
+  my $cpath=$select[$ans];
+
+  # -c option : clone
+  if ($action eq "clone" || $action eq "co" ) {
+    my $rec_option="--recurse";
+    if ( $^O eq "os390") { 
+        # YAT-1848
+        $rec_option=""
+    }
+    my $cmd="git clone $rec_option $hpaths->{$cpath}->{url_eff} 2>&1";
+    my $dcmd=_sec($cmd);
+    my $branch=$mandatory_branch;
+    if (confirm($autoconfirm, "$ASKTAG: About to: $dcmd \n$ASKTAG: Confirm: [y]/n/q? : ")) {
+      my $out=`$cmd`;
+      print "$out";
+
+      my $repo= basename( $hpaths->{$cpath}->{url} ) ; $repo =~ s/\.[^\.]*$//;
+      chdir ($repo);
+      if ( $branch ) {
+        if ( $out =~ /warning: You appear to have cloned an empty repository./ ) {
+          if (confirm($autoconfirm, "$ASKTAG: Set up $branch branch?\n$ASKTAG: Confirm: [y]/n/q? : ")) {
+            system( "touch .gitignore");
+            system( "git add .gitignore");
+            system( "git commit -m initial" );
+            system( "git push origin master" );
+            system( "git branch $branch" );
+            system( "git push -u origin $branch:$branch" );
+            print "$WARNINGTAG: in $target, set default branch to '$branch'\n";
+          }
+        }
+      }
+      $cmd="git checkout $branch 2>&1";
+      $out=`$cmd`;
+      print "$out";
+      $cmd="git branch -a";
+      print "---branches---\n";
+      system($cmd);
+      print "---\n";
+      chdir ("..");
+    }
+  }
+
+  # -f getfile : retrieve getfile
+  if ($action eq "getfile") {
+    my $dir=$getfile; $dir =~ s=/.*==;
+    system("rm -f \"$TMP/$getfile\"");
+    my $cmd="git archive --remote=".$hpaths->{$cpath}->{url_eff}. " $version \"$getfile\" | (cd $TMP; tar -xf-);";
+    $cmd.=" [ \$? -ne 0 ] && echo \"ERROR!\" && exit 1;";
+    if ($getfileLocal) {
+      my $x=basename($getfile);
+      $cmd .="cp \"$TMP/$getfile\" $x;";
+    } else {
+      $cmd .="cat \"$TMP/$getfile\";";
+    }
+    $cmd .="rm -rf \"$TMP/tmp/$dir\";";
+
+    my $dcmd=_sec($cmd);
+    if (confirm($autoconfirm, "$ASKTAG: About to: $dcmd \n$ASKTAG: Confirm: [y]/n/q? : ")) {
+      my $rc=system($cmd);
+      if ($rc != 0 ) { print "An error occurred\n" ; return 1; }
+
+    }
+  }
+  if ($action eq "tags") {
+    my $cmd="git ls-remote --tags --heads ".$hpaths->{$cpath}->{url_eff};
+    my $dcmd=_sec($cmd);
+    if (confirm($autoconfirm, "$ASKTAG: About to: $dcmd \n$ASKTAG: Confirm: [y]/n/q? : ")) {
+      my $rc=system($cmd);
+      if ($rc != 0 ) { print "An error occurred\n" ; return 1; }
+    }
+  }
+}
+
+sub gitea_repos {
+  my ($project,$repo_user,$use_http) = (@_);
+  my $r=_curl("GET", "/user/repos");      # all accessible
+  #my $r=_curl("GET", "/users/$repo_user/repos");  # user specific
+  
+  #print Dumper($r);
+  my %paths=();
+
+  for my $e (@$r) {
+    #printf( "%-40s %-40s %s\n", $e->{name}, $e->{description}, $e->{ssh_url});
+    #printf( "%-40s %s\n", $e->{name}, $e->{ssh_url});
+    my $path=$e->{ssh_url}; 
+    $path=~s=^[^/]*//[^/]*==;
+    $path=~s=\.git$==;
+    $paths{$path}->{name}=$e->{name};
+    $paths{$path}->{ssh_url}=$e->{ssh_url};
+    $paths{$path}->{clone_url}=$e->{clone_url};
+
+    if ( ! $use_http ) {
+      $paths{$path}->{url}=$e->{ssh_url};
+      $paths{$path}->{url_eff}=$e->{ssh_url};
+    } else {
+      $paths{$path}->{url}=$e->{clone_url};
+      my $clone_url = $e->{clone_url}; 
+      $clone_url =~ s=//=//$user:$pass\@=;
+      $paths{$path}->{url_eff}=$e->{clone_url}; # insert userid passwd
+    }
+  } 
+  return \%paths;
+}
+
+sub bitbucket_repos {
+  my ($project,$repo_user,$use_http) = (@_);
+
+  my $url = "/repos";
+  if ( $project ) {
+        $url="/projects/$project/repos";
+  };
+  if ($repo_user) {
+        $url="/users/$repo_user/repos";
+  }
+
+  my %paths=();
+
+  #my $r=_curl("GET", "/user/repos");   # not supported
+  #my $r=_curl("GET", "/users/$repo_user/repos");
+  my $r=_curl("GET", $url);
+  #print Dumper($r);
+  if ( ref($r) ne "ARRAY") {
+    print Dumper($r);
+    $r=();
+  }
+  for my $e (@$r) {
+    my $clone=$e->{links}->{clone};
+    my $ssh_url;
+    my $http_url;
+    my $url;
+
+    for my $c (@$clone) {
+        if ( $c->{name} eq "ssh" ) { $ssh_url= $c->{href} }
+        if ( $c->{name} =~ /^http/ ) { $http_url= $c->{href} }
+    }
+    if ( $use_http ) {
+      my $path=$http_url; 
+      $path=~s=^[^/]*//[^/]*==;
+      $path=~s=\.git$==;
+      $paths{$path}->{name}=$e->{name};
+      $paths{$path}->{url}=$http_url;
+      $http_url =~ s=//=//$user:$pass\@=;
+      $paths{$path}->{url_eff}=$http_url;   # insert userid passwd
+    } else {
+      my $path=$ssh_url; 
+      $path=~s=^[^/]*//[^/]*==;
+      $path=~s=\.git$==;
+      $paths{$path}->{name}=$e->{name};
+      $paths{$path}->{url}=$ssh_url;
+      $paths{$path}->{url_eff}=$ssh_url;
+    }
+  } 
+  return \%paths;
+}
+
+sub github_repos {
+  my ($repo_user) = (@_);
+  my $url = "/user/repos";
+
+  #if ( $repo_user ) {
+  #  notice "$repo_user";
+  #  $url = "/user/$repo_user/repos";
+  #}
+
+  my %paths=();
+
+  #my $r=_curl("GET", "/user/repos");   # not supported
+  #my $r=_curl("GET", "/users/$repo_user/repos");
+  my $r=_curl("GET", $url);
+  #print Dumper($r);
+  if ( ref($r) ne "ARRAY") {
+    print Dumper($r);
+    $r=();
+  }
+  for my $e (@$r) {
+    my $clone_url=$e->{clone_url};
+    my $path=$clone_url; 
+      $path=~s=^[^/]*//[^/]*==;
+      $path=~s=\.git$==;
+      $paths{$path}->{name}=$e->{name};
+      $paths{$path}->{url}=$clone_url;
+      $clone_url =~ s=//=//$user:$pass\@=;
+      $paths{$path}->{url_eff}=$clone_url;   # insert userid passwd
+  } 
+  return \%paths;
+}
+
+#--------------------------------------------------------------#
+#--- users 
+# gti users 
+#   List users.
+#---
+#--------------------------------------------------------------#
+sub cmd_users() {
+  if ($target eq "bitbucket" ) { return bitbucket_users(); }
+  if ($target eq "gitea") { return gitea_users(); }
+  ERROR( "no support for $target" );
+  return 1
+}
+
+sub gitea_users() {
+  my $r=_curl("GET", "/users");
+  #print $r;
+  my $p= decode_json $r;
+  #print Dumper($p);
+  for my $e (@$p) {
+    printf( "%-40s %-40s %s\n", $e->{name}, $e->{description}, $e->{ssh_url});
+  } 
+}
+
+sub bitbucket_users() {
+  my $r=_curl("GET", "/users");
+  for my $e (@$r) {
+    printf( "%-40s %-40s %s\n", $e->{name}, $e->{displayName});
+  } 
+}
+#--------------------------------------------------------------#
+#--- projects 
+# gti projects
+#   List projects.
+#---
+#--------------------------------------------------------------#
+sub cmd_projects() {
+  if ($target eq "bitbucket" ) { return bitbucket_projects(); }
+  if ($target eq "gitea") { return gitea_projects(); }
+  ERROR( "no support for $target" );
+  return 1
+}
+
+sub gitea_projects() {
+  my $r=_curl("GET", "/projects");
+  #print $r;
+  my $p= decode_json $r;
+  #print Dumper($p);
+  for my $e (@$p) {
+    printf( "%-40s %-40s %s\n", $e->{name}, $e->{description}, $e->{ssh_url});
+  } 
+}
+
+sub bitbucket_projects() {
+  my $r=_curl("GET", "/projects");
+  for my $e (@$r) {
+    printf( "%-10s %-40s %-40s %s\n", $e->{key}, $e->{name}, $e->{description});
+  } 
+}
+
+#--------------------------------------------------------------#
+#--- cm 
+# gti cm [<items to commit>]
+#
+#   cvs/git committer with comment history
+#   This utility fetches the first line of ~/.cm to be used as
+#   comment for the cvs/git commit command. It also enables the user to
+#   edit this ~/.cm file.
+#
+#---
+#--------------------------------------------------------------#
+sub cmd_cm() {
+
+    our $topdir;
+    my $hostname=hostname();
+
+    # what comment?
+    if ( ! $ENV{EDITOR} ) { $ENV{EDITOR}="vi"; }
+
+    my $cmfile=$ENV{HOME}."/.cm";
+    if ( ! $ENV{HOME} ) {
+            $cmfile=$ENV{HOMEDRIVE}.$ENV{HOMEPATH}.".cm";
+    }
+    $cmfile =~ s/\\/\//g;
+
+    if ($ARGV[0] eq "-?" )  {
+      usage();
+      print "---- recent comments ----\n";  
+      system( "cat $cmfile" );
+      exit;
+    }
+
+    my $mode = getmode();
+    if ( ! $mode ) {
+        error( "cannot determine cvs/git mode");
+        doexit(1);
+    }
+
+    my $straycnt=0;
+    my $MAX=10;
+    my $loop=1;
+    while ( $loop ) {
+            if ( $straycnt++ >10 ) { exit(1); } # in case of no input, endless loop
+            my @comment=();
+            if ( open IN , $cmfile ) {
+                    while (my $l=<IN> ) {
+                            chomp $l;
+                            $l =~ s/^\s*//g;
+                            next if ( ! $l ) ;
+                            push @comment, $l;
+                    }
+                    close IN;
+            }
+
+            print "===== enhanced ($mode) committer =====\n";
+            my $input;
+
+            my $ix=0;
+            for my $c (@comment) {
+                    chomp $c;
+                    next if ( ! $c );
+                    $ix++;
+                    print "$ix : $c\n";
+            }
+            print "===== [1]-$ix,e(dit),q(uit),'+ <new comment>' ? => " ;
+            $input = <STDIN>;
+            if ( ! defined $input || $input eq "" ) {		# on windows under cygwin: first read sometimes dummy
+                    $input = <STDIN>;
+            }
+            chomp $input;
+            if ( ! $input ) { $input = 1; }
+
+            if ( $input eq "q" ) {
+                    $loop=0;
+            } elsif ( $input eq "e" ) {
+                    my $cmd = "$ENV{EDITOR} \"$cmfile\"";
+                    if ( $ENV{CYGWIN_VI} ) {
+                            $cmd = "$ENV{CYGWIN_VI} \"$cmfile\"";
+                    }
+                    my $rc = system( $cmd );
+                    my $x = 0 + $!;
+
+                    if ( $x == 2 ) {	# NOSUCHFILEORDIRECTORY
+                            if ( $^O eq "MSWin32") {
+                                    $cmd = "notepad.exe \"$cmfile\""; # "
+                            } else {	
+                                    $cmd = "vi \"$cmfile\"";  # "
+                            }
+                            $rc = system( $cmd );
+                    }
+
+            } elsif ( $input =~ /^\d*$/ || $input !~ /^\s*$/ ) {
+
+                    my $ctxt='';
+                    my $reorder=0;
+                                    
+                    if ( $input =~ /^\d*$/ ) {
+                       $ix=$input;
+                       $ix--;
+                       $ctxt = $comment[$ix];
+                       $reorder=1;
+                    } elsif ( $input =~ /^\+/) {
+                       $input =~ s/\+\s*//g;
+                       push @comment, $input;
+                       $ix= @comment;
+                       $ctxt=$input;
+                       $reorder=1;
+                       $ix--;
+                    } else {
+                       $ctxt=$input;
+                    }
+
+                    print "===\n";
+                    print "$ctxt\n";
+                    print "===\n";
+
+                    if ( $ctxt ne '' ) {
+                       my $rc=1;
+                       if ( $mode eq 'cvs' ) { $rc=cvscommit($ctxt); }
+                       if ( $mode eq 'git' ) { $rc=gitcommit($ctxt); }
+                       $loop=0;
+                       if ( $rc == 0 ) {
+                        print "===\n";
+                        print "$ctxt\n";
+                        print "===\n";
+                       }
+                    }
+
+                    # reorder comments
+                    if ( $reorder == 1 ) {        
+                      my @newcomment=();
+                      push @newcomment, $comment[$ix];
+                      delete $comment[$ix];
+                      push @newcomment,@comment;
+
+                      my $cnt=0;	
+                      if ( open OUT , ">$cmfile" ) {
+                            for my $c (@newcomment) { 
+                                    print OUT "$c\n"; 
+                                    $cnt++;
+                                    if ( $cnt >= $MAX ) { last; }
+                            }
+                            close OUT;
+                      }
+                    }
+            } 
+
+    }
+
+    sub getmode {
+      my $mode;
+      if ( $ENV{MSHPWD_TYPE} && $ENV{MSHPWD_TYPE} eq "MVS" ) {
+          $mode='cvs';
+      }
+      if ( !$mode ) {
+        if ( -d "CVS" ) {
+          $mode='cvs';
+        }
+      }
+      if ( !$mode ) {
+          my $path = getcwd();
+          while ( $path && $path ne "/" ) {
+              if ( -e "$path/.git" ) {
+                $mode='git';
+                $topdir=$path;
+                last;
+              }
+              $path=dirname($path);
+          }
+      }
+      if ( !$mode ) {
+        if ($ARGV[0]) {
+          my $x= $ARGV[0];
+          if (-f $x) {
+              $x=dirname($x);
+          }
+          if (-d $x) {
+              if ( -d "$x/CVS" ) {
+                  $mode='cvs';
+              }
+              if ( -d "$x/.git" ) {
+                  $mode='git';
+              }
+          }
+        }
+      }
+      return $mode;
+    }
+
+
+    # bug 31254
+    # when using cvsnt (on MSWin32 and cygwin)
+    # the -m option on commit adds an annoying message
+    # better use -M
+
+    sub get_min_m {
+                    my $min_m="-m";
+
+                    if (! $ENV{CVS_HANDS_OFF_MINUS_M} ) {
+                            if ( $^O eq "MSWin32" || $^O eq "cygwin" ) {
+                             if ( open MYCVS, "cvs --help commit 2>&1|" ) {
+                                     while (my $l = <MYCVS> ) {
+                                             if ( $l =~ /\s-M\s/ ) {
+                                                     $min_m="-M";
+                                             }
+                                     }
+                                     close MYCVS;
+                             }
+                            }
+                    }
+                    return ($min_m);
+    }
+
+    sub cvscommit {
+        my $ctxt=shift;
+        my $min_m = get_min_m();
+        my $cmd = "cvs commit $min_m \"$ctxt\"";
+        if ( $ENV{MSHPWD_TYPE} && $ENV{MSHPWD_TYPE} eq "MVS" ) {
+                $cmd = "msh $cmd";
+        }
+        for my $arg ( @ARGV) {
+                $cmd .= " \"$arg\"";
+        }
+        my $rc=system( $cmd );
+        if ( $? != 0 ) { $rc=1; }
+        return $rc;
+    }
+
+    sub gitcommit {
+        my $ctxt=shift;
+        my $cmd;
+        my $rc=0;
+
+        $cmd = "git add -u .";
+        if ( $ENV{MSHPWD_TYPE} && $ENV{MSHPWD_TYPE} eq "MVS" ) {
+                $cmd = "msh $cmd";
+        }
+
+        system( $cmd );
+        $cmd = "git status ";
+        if ( $ENV{MSHPWD_TYPE} && $ENV{MSHPWD_TYPE} eq "MVS" ) {
+                $cmd = "msh $cmd";
+        }
+        system( $cmd );
+
+        $cmd = "git commit -m \"$ctxt\"";
+        if ( $ENV{MSHPWD_TYPE} && $ENV{MSHPWD_TYPE} eq "MVS" ) {
+                $cmd = "msh $cmd";
+        }
+        system( $cmd );
+
+        my $straycnt=0;
+        print "===== push? [y]/n";
+        my $a=<STDIN>;
+        chomp $a;
+        if ( ! $a ) { $a = 'y'; }
+        chomp $a;
+        if ($a eq 'y' ) { 
+          my $cmd = "git push";
+          if ( $ENV{MSHPWD_TYPE} && $ENV{MSHPWD_TYPE} eq "MVS" ) {
+                $cmd = "msh $cmd";
+          }
+          my $rc=system( $cmd );
+          if ( $? != 0 ) { $rc=1; }
+        }
+        return $rc;
+    }
+}
+
+#--------------------------------------------------------------#
+#--- cu 
+# gti cu 
+#
+#   cvs/git updater
+#---
+#--------------------------------------------------------------#
+sub cmd_cu() {
+    # what comment?
+    if ( ! $ENV{EDITOR} ) { $ENV{EDITOR}="vi"; }
+
+    my $mode = getmode();
+    if ( ! $mode ) {
+        error( "cannot determine cvs/git mode");
+        doexit(1);
+    }
+
+    my $cmd;
+    if ($mode eq 'git' ) { $cmd="git pull"; }
+    if ($mode eq 'cvs' ) { $cmd="cvs update -A -d"; }
+
+    if ($cmd) {
+      system($cmd);
+    }
+}
+
+#--------------------------------------------------------------#
+#--- tag
+# tag git/cvs tag
+# Command:      tag [-l] [-d] [-r] [<tag>]
+#                   -l : list (default)
+#                   -r : retag
+#                   -d : delete
+#               retag is synonym for 'tag -r'
+#---
+#--------------------------------------------------------------#
+sub cmd_tag {
+    my @arg=@_;
+
+    my $l_flag=1;   # default : list
+    my $d_flag=0;
+    my $r_flag=0;
+    my $tag;
+
+    if ( $arg[0] ) { $l_flag=0; }
+
+     while ( $arg[0] ) {
+           if ($arg[0] =~ /^-(d)$/) { $d_flag++; }
+        elsif ($arg[0] =~ /^-(r)$/) { $r_flag++; }
+        elsif ($arg[0] =~ /^-(l)$/) { $l_flag++; }
+        else { $tag=$arg[0]; }
+        shift @arg;
+     }      
+
+    # what comment?
+    if ( ! $ENV{EDITOR} ) { $ENV{EDITOR}="vi"; }
+
+    my $mode = getmode();
+    if ( ! $mode ) {
+        error( "cannot determine cvs/git mode");
+        doexit(1);
+    }
+
+    if ($mode eq 'git' ) { cmd_git_tag( $l_flag, $r_flag, $d_flag, $tag );}
+    if ($mode eq 'cvs' ) { cmd_cvs_tag( $l_flag, $r_flag, $d_flag, $tag );}
+}
+
+sub cmd_git_tag {
+    my ( $l_flag, $r_flag, $d_flag, $tag ) = @_ ; 
+
+    my $cmd;
+    my $rval=0;
+    if ( $l_flag ) {
+        $cmd="git tag";
+        verbose($cmd);
+        system($cmd);
+        $rval=$?;
+        return $rval;
+    }
+    if ( $d_flag ) {
+      if ( ! $tag ) {
+        error "-d requires a tag \n"; 
+        return 1;
+      }
+      $cmd="git tag -d $tag 2>/dev/null"; 
+      verbose($cmd);
+      system($cmd);     # fails if not exist
+      $cmd="git push --delete origin $tag --force"; 
+      verbose($cmd);
+      system($cmd);     # fails if not exist
+      return $rval;
+    }
+    if ( $r_flag ) {
+        if ( $tag ) {
+          error "retag (or -r) allows no tag \n"; 
+          return 1;
+        }
+        my $last=`git tag`;
+        my $match;
+        print ("=== git tag : ===\n");
+        print ($last);
+        print ("===\n");
+        foreach my $l (split /\n/,$last ) {
+          chomp $l;
+          if ( $l =~ /^\s*v.*$/ ) {
+              $l=~ s/^\s*//;
+              $l=~ s/\s.*//;
+              $match=$l;                        # keep last match
+          }
+        }
+        if ( !$match ) {
+          error "could not find last tag\n"; 
+          return 1;
+        }
+        if(confirm($opt_ac, "$ASKTAG: About to: retag with '$match' \n$ASKTAG: Confirm: [y]/n/q? : ")){
+          $tag=$match;
+          # fallthru
+        } else {
+          print "no action\n";
+          return 1;
+        }
+    }
+
+
+    if ( $tag ) {
+      notice("apply git tag=$tag");
+      $cmd="git tag -d $tag 2>/dev/null"; 
+      verbose($cmd);
+      system($cmd);     # fails if not exist
+      $cmd="git push --delete origin $tag --force"; 
+      verbose($cmd);
+      system($cmd);     # fails if not exist
+      $cmd="git tag -f $tag"; 
+      verbose($cmd);
+      system($cmd);
+      $rval=$?; if ($rval != 0 ) { return $rval } ;
+      $cmd="git push origin $tag --force"; 
+      verbose($cmd);
+      system($cmd);
+      $rval=$?; if ($rval != 0 ) { return $rval } ;
+    }
+}
+#--------------------------------------------------------------#
+
+sub cmd_cvs_tag {
+    my ( $l_flag, $r_flag, $d_flag, $tag ) = @_ ; 
+
+    my $pwd=getcwd();
+    while ( ! -f "./CDF" && $pwd ne "/") {
+        chdir("..") ;
+        my $npwd=getcwd();
+        if ( $npwd eq $pwd ) { last; } 
+    }
+    if ( ! "./CDF" ) {
+      error "could not find the CDF file for this component\n"; 
+      return 1;
+    }
+    my $repo=`cat CVS/Repository`;
+    if ( ! $repo ) {
+      error "could not find the CVS/Repository for this component\n"; 
+      return 1;
+    }
+    chomp $repo;
+
+    my $cmd;
+    my $rval=0;
+    if ( $l_flag ) {
+        $cmd="cvs status -v ./CDF";
+        verbose($cmd);
+        system($cmd);
+        $rval=$?;
+        return $rval;
+    } 
+     
+    if ( $d_flag ) {
+        if ( ! $tag ) {
+          error "-d requires a tag \n"; 
+          return 1;
+        }
+        $cmd="cvs rtag -d $tag $repo";
+        verbose($cmd);
+        system($cmd);
+        $rval=$?;
+        return $rval;
+    }
+    if ( $r_flag ) {
+        if ( $tag ) {
+          error "-r allows no tag \n"; 
+          return 1;
+        }
+        my $mod=basename($repo);
+        my $last=`cvs status -v ./CDF`;
+        print ("=== cvs status -v ./CDF : ===\n");
+        print ($last);
+        print ("===\n");
+        my $match;
+        foreach my $l (split /\n/,$last ) {
+              verbose( "XXXX ($mod) " . $l);
+          chomp $l;
+          if ( $l =~ /^\s*($mod|SAM$mod)/ ) {
+              $l=~ s/^\s*//;
+              $l=~ s/\s.*//;
+              $match=$l;
+              verbose($l);
+              last;
+          }
+        }
+        if ( !$match ) {
+          error "could not find last tag\n"; 
+          return 1;
+        }
+        if(confirm($opt_ac, "$ASKTAG: About to: retag with '$match' \n$ASKTAG: Confirm: [y]/n/q? : ")){
+          $tag=$match;
+          # fallthru
+        } else {
+          print "no action\n";
+          return 1;
+        }
+    }
+
+    if ( $tag ) {
+        notice("apply cvs tag=$tag");
+        $cmd="cvs rtag -d $tag $repo";
+        verbose($cmd);
+        system($cmd);
+        $rval=$?; if ($rval != 0 ) { return $rval } ;
+
+        $cmd="cvs tag -F $tag";
+        verbose($cmd);
+        system($cmd);
+        $rval=$?; if ($rval != 0 ) { return $rval } ;
+    }
+    return $rval;
+}
+#--------------------------------------------------------------#
+
+
+sub gtiMain {
+  verbose("gtiMain");
+
+  my $cmd= $ARGV[0]; shift @ARGV;
+  if ( ! $cmd ) {  error("no command"); usage(); return 1; }
+  if ( $cmd eq "clone" ||  $cmd eq "co" ) { 
+    if ( $ARGV[0] && $ARGV[0] =~ /.git$/ ) {
+      # straight path
+      verbose("straight git clone $ARGV[0]");
+      system ( "git clone \"$ARGV[0]\"");
+      return $?;
+    } else {
+      # fuzzy path
+      my @arg=(); push(@arg, "-c");  push (@arg, @ARGV); return cmd_repos(@arg); 
+    }
+  }
+  if ( $cmd eq "repos" ) { return cmd_repos(@ARGV); }
+  if ( $cmd eq "users" ) { return cmd_users(); }
+  if ( $cmd eq "projects" ) { return cmd_projects(); }
+  if ( $cmd eq "check" ) { return cmd_check(); }
+  if ( $cmd eq "cm" ) { return cmd_cm(); }
+  if ( $cmd eq "cu" ) { return cmd_cu(); }
+  if ( $cmd eq "tag" ) { return cmd_tag( @ARGV ); }
+  if ( $cmd eq "retag" ) { my @arg=(); push(@arg, "-r");  push (@arg, @ARGV); return cmd_tag(@arg); }
+  if ( $cmd eq "help" ) { return cmd_help(@ARGV); }
+  if ( $cmd eq "config" ) { return cmd_config(@ARGV); }
+
+  if ( $cmd =~ /^(wipe)$/ ) { return cmd_wipe(); }
+  if ( $cmd =~ /^(w|wrap)$/ ) { return cmd_wrap(); }
+  if ( $cmd =~ /^(uw|unwrap)$/ ) { return cmd_unwrap(); }
+  if ( $cmd =~ /^(z|zip)$/ ) { return cmd_zip(); }
+  if ( $cmd =~ /^(uz|unzip)$/ ) { return cmd_unzip(); }
+  if ( $cmd =~ /^(c|crypt)$/ ) { return cmd_crypt(); }
+  if ( $cmd =~ /^(uc|uncrypt)$/ ) { return cmd_uncrypt(); }
+  error("unknown command '$cmd'");
+  return 1;
+}
+
+
+
+# common_options
+while ( $ARGV[0] =~ /^-/ || $ARGV[0] =~ /^(bb|bitbucket|gt|gitea|gh|github)$/ ) {
+    if ($ARGV[0] =~ /(bb|bitbucket)/i) {  $target = "bitbucket"; shift @ARGV; next;}
+    elsif ($ARGV[0] =~ /(gt|gitea)/i) {  $target = "gitea";  shift @ARGV; next;}
+    elsif ($ARGV[0] =~ /(gh|github)/i) {  $target = "github";  shift @ARGV; next;}
+    elsif ( common_option( $ARGV[0] ) == 0 ) { shift @ARGV; next; } 
+    elsif ($ARGV[0] eq "--noskip" ) { $opt_noskip=1; shift @ARGV;  next; }
+    elsif ($ARGV[0] eq "--force" ) { $opt_force=1; shift @ARGV;  next; }
+    elsif ($ARGV[0] eq "--user" ) { $ENV{USER}=$ARGV[1]; shift @ARGV; shift @ARGV; next; } 
+    else {
+      error("unknown common option: $ARGV[0]");
+      usage();
+    }
+    exit 1;
+}
+
+my $rc = doinit();
+if ( $rc != 0 ) { doexit(1); }
+verbose("gtiMain ". join( " ", @ARGV ));
+doexit( gtiMain(@ARGV) );
+
