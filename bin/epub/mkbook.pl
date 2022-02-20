@@ -11,10 +11,14 @@ my $cssdir="$cwd/css";
 my $htmldir="$cwd/html";
 my $imagedir="$cwd/image";
 my $abcdir="$cwd/abc";
+my $suzdir="$cwd/suzuki";
 my @htmls=();
 my @images=();
+my $suzimgwidth=50;
 
+#-----------------------------------------------------
 # abc2svg
+# convert abc to svg
 sub abc2svg() {
 	if ( ! -d $abcdir ) {
 		die "Sorry no abc dir" ;
@@ -28,7 +32,7 @@ sub abc2svg() {
 	    next if ($e =~ /^\./ );
 	    next if ( ! -f "$abcdir/$e" );
 	    if ($e =~  /\.(abc)$/i ) {
-		doAbc($e);
+		_doAbc2Svg($e);
 		next;
             }
 	}
@@ -40,7 +44,7 @@ my $gheight=50;
 my $gwidth=50;
 my $ixgheight=80;
 my $ixgwidth=80;
-sub doAbc {
+sub _doAbc2Svg {
 	my ($abcfile) = @_;
 	my $svg=$abcfile; $svg =~ s/.abc$/-.svg/;
 	my $svg001=$abcfile; $svg001 =~ s/.abc$/-001.svg/;
@@ -114,8 +118,9 @@ print MYFILE "<a href=\"./index.html\"><img src=\"$name-md.png\" style=\"width:$
 }
 
 
-# convert *.md in /edit dir to *html in /html dir
+#-----------------------------------------------------
 # edit2html
+# convert *.md in /edit dir to *html in /html dir
 sub edit2html() {
         if ( ! -d $editdir ) {
 		print "ERROR: no dir $editdir\n";
@@ -147,9 +152,8 @@ sub edit2html() {
 			  next;
 		  }
 		} 
-		#hiero
                 my $pt="$base" ;	
-print " HHHHH do pandoc $e/$ee\n" ;
+                #print " HHHHH do pandoc $e/$ee\n" ;
 		system "pandoc --metadata pagetitle=\"$pt\" -s \"$editdir/$e/$ee\" -t html -o \"$htmldir/$base.html\"" ;
 	        push @htmls, "$htmldir/$base.html;$e" ;
 		next;
@@ -191,6 +195,8 @@ print " HHHHH do pandoc $e/$ee\n" ;
 }
 
 
+#-----------------------------------------------------
+# copy2html
 sub copy2html {
 	my $txt=shift;
 	my $html=shift;
@@ -299,29 +305,19 @@ my %act_file_to_key=();
 my %act_file_to_level=();
 my %act_file_to_title=();
 
-sub analyze() {
-
-	#	open ( INDEX, "index") || die " $!" ;
-	#my @ix= <INDEX>;
-	#close INDEX;
-	#for my $i (@ix) {
-	#	chomp $i;
-	#	my ($f,$level,$title)=split /;/,$i;
-	#	next if ( ! $f );
-	#	push @ix_files,$f;
-	#	$ix_file_to_level{$f} = $level;
-	#	$ix_file_to_title{$f} = $title;
-	#}
-
+#-----------------------------------------------------
+# make index.html
+# mkIndex
+sub mkIndex() {
 	open ( CMD, "find edit -type f|") || die " $!" ;
   	my @list=<CMD>;
 	close CMD;
 	for my $md (sort @list) {
 		next if ( $md !~ /\.md$/);	
 		chomp $md;
-		dofile( $md );
+		_mkIndexDoFile( $md );
  	} 
-	open ( INDEX, ">index.new") || die " $!" ;
+	open ( INDEX, ">index.lst") || die " $!" ;
 	my $lastdir=""; 
 	for my $f ( sort @act_files ) {
 		my $dir= dirname($f);
@@ -334,9 +330,9 @@ sub analyze() {
 			;	
 	}
 	close INDEX;
-	system "cat index.new" ;
-
-	mkindexnew();
+	system "cat index.lst" ;
+	_mkIndexHtml();
+	unlink "index.lst" ;
 }
 sub getTime {
 
@@ -346,7 +342,8 @@ sub getTime {
     return $nice_timestamp;
 }
 
-sub mkindexnew {
+# _mkIndexHtml
+sub _mkIndexHtml {
 	my $date=getTime();
 	my $cwd=getcwd();
         my $cssdir="$cwd/css";
@@ -381,9 +378,9 @@ sub mkindexnew {
 		my $png=$base.".png" ; 
 		$png =~ s/\.md\./\./g;
 		$base =~ s/[_-]/ /g;
-		print " HH $png\n" ;
+                #print " HH $png\n" ;
 		if ( -f "$imagedir/ix-$png"  ) {
-		print " HH bingo ix-$png\n" ;
+                  #print " HH bingo ix-$png\n" ;
 			$indeximage="./ix-$png" ;
 		}
 		my @f= split / /,$base;
@@ -426,7 +423,7 @@ sub mkindexnew {
 	close HTML;
 }
 	
-sub dofile($) {
+sub _mkIndexDoFile($) {
 	my ($f)=@_;
 	push @act_files,$f;
 	open(FILE,$f)|| die;
@@ -463,11 +460,178 @@ sub dofile($) {
 	}
 }
 
+#-----------------------------------------------------
+# abc2suz
+# convert abc to suzuki mouthharp
+sub abc2suz() {
+	if ( ! -d $abcdir ) {
+		die "Sorry no abc dir" ;
+	}	 
+        system( "rm -rf $suzdir" );
+	if ( ! -d "$suzdir") { mkpath( [ "$suzdir"], 1, 0755) || die; }
+	opendir( MYDIR,$abcdir) || die;
+	my @abcfiles=readdir(MYDIR);
+	closedir MYDIR;
+	for my $e (@abcfiles) {
+	    next if ($e =~ /^\./ );
+	    next if ( ! -f "$abcdir/$e" );
+	    if ($e =~  /\.(abc)$/i ) {
+		_doAbc2Suz("$e");
+		next;
+            }
+	}
+	return 0;
+}
+
+my %l2h=(
+  "A" => "a",
+  "B" => "b",
+  "C" => "c",
+  "D" => "d",
+  "E" => "e",
+  "F" => "f",
+  "G" => "g",
+  "a" => "ax",
+  "b" => "bx",
+  "c" => "cx",
+  "d" => "dx",
+  "e" => "ex",
+  "f" => "fx",
+  "g" => "gx",
+  "ax" => "axx",
+  "bx" => "bxx",
+  "cx" => "cxx",
+  "dx" => "dxx",
+  "ex" => "exx",
+  "fx" => "fxx",
+  "gx" => "gxx",
+);
+
+sub _doAbc2Suz($) {
+  my ($bare)=@_;
+  $bare=~ s/.abc$//;
+  my $abc="$abcdir/$bare.abc"; 
+  my $ltag="OK";
+  my $htag="OK";
+  our @suzLow=();
+  our @suzHigh=();
+  my $intable=0;
+
+  my $imageext="";
+  for my $e ( qw( png PNG jpg JPG jpeg JPEG svg SVG )) {
+   if ( -f "$abcdir/$bare.$e" ) { $imageext=$e; last; }
+  }
+
+  sub addline($) {
+      my $xl=shift;
+      push @suzLow, $xl;
+      push @suzHigh, $xl;
+  }
+
+  sub addnote($$) {
+      my $notelow=shift;
+      my $notehigh=shift;
+      push @suzLow, "<td><img src=\"../suzuki-images/suzuki-$notelow.png\" height=\"32px\" ></td>";
+      push @suzHigh, "<td><img src=\"../suzuki-images/suzuki-$notehigh.png\" height=\"32px\" ></td>";
+  }
+  addline "<html>\n";
+  addline "<body>\n";
+
+  open ABC,$abc || die "cannot open $abc : $!" ;
+  my @abc = <ABC>;
+  close ABC;
+  my $key="?";
+  for my $l (@abc) {
+    chomp $l;
+    #print "l $l\n" ;
+    next if ( $l =~ /^[\%MLXS]/i );
+    if ( $l =~ /^K:/i) {
+      $key=$l;
+      $key =~ s/\%.*//i;
+      $key =~ s/^K: *//i;
+      next;
+    }
+    if ( $l =~ /^T:/i ) {
+      $l =~ s/^T: *//i;
+      addline ("<h1>$l") ;
+      if ( $imageext ) {
+        addline ("&nbsp;&nbsp;<img src=\"../abc/$bare.$imageext\" height=\"${suzimgwidth}px\"/>" );
+      }
+      addline ("</h1>\n") ;
+      next;
+    }
+    if ( $l =~ /^w:/i ) {
+      $l =~ s/^w: *//i;
+      $l =~ s/-/- /g;
+      if ( $l =~ /^[ ~]*$/ ) { next; } 
+      addline ("<tr>\n")  ;
+      for my $c ( split / +/,$l) {
+        addline ("<td align=\"center\">$c</td>") ;
+      }
+      addline ("</tr>\n") ;
+      next;
+    }
+
+    # must be line of notes
+    #
+    $l=~ s/[ \|`\/]//g;
+    $l=~ s/"[^"]*"//g;
+    $l=~ s/![^!]*!//g;
+    $l=~ s/[0-9]//g;
+    print " HHH $l\n" ;
+    $l=~ s/[^a-g,A-G,']//g;
+    print " HHHo $l\n" ;
+
+    next if ( $l =~ /^[ \|]*$/ );
+    my @c=( split //,$l);
+    my @notes=();
+    my $i=0;
+    my $j=-1;
+    while ( $i < @c ) {
+      if ( $c[$i] =~ /^ *$/) {
+
+      } elsif ( $c[$i] eq "'" ) {
+        $notes[$j] .= "x";
+      } else {
+        $j++;
+        $notes[$j] = $c[$i];
+      }
+      $i++;
+    }
+    if ($intable) { addline ("</table>\n") ; }
+    addline ("<br/>\n") ;
+    addline ("<table>\n") ;
+    $intable=1;
+    addline ("<tr>\n") ;
+    for my $c ( @notes ) {
+      if ( $c =~ /^(x|F|A|bx|dxx|exx|fxx|gxx|axx|bxx)$/ ) { $ltag="NOK"; };
+      my $hc=$l2h{$c} || 'x' ;
+      if ( $hc =~ /^(x|F|A|bx|dxx|exx|fxx|gxx|axx|bxx)$/ ) { $htag="NOK"; };
+      addnote $c, $hc;
+    }
+    addline ("</tr>\n") ;
+  }
+  if ($intable) { addline ("</table>\n") ; }
+  addline "</body>\n" ;
+  addline "</html>\n" ;
+
+  my $html="$suzdir/$ltag-$bare-$key-low.html" ;
+  open HTML,">$html"  || die "cannot open $html : $!" ;
+  print HTML @suzLow;
+  close HTML;
+
+  $html="$suzdir/$htag-$bare-$key-high.html" ;
+  open HTML,">$html"  || die "cannot open $html : $!" ;
+  print HTML @suzHigh;
+  close HTML;
+}
+
 
 ### main
 my $command=$ARGV[0];
-if ($command eq "edit2html") { edit2html(); analyze(); exit();}
+if ($command eq "edit2html") { edit2html(); mkIndex(); exit();}
 if ($command eq "abc2svg") { exit abc2svg; }
+if ($command eq "abc2suz") { exit abc2suz; }
 print "Hûh? What $command\n";
 exit(1);
 

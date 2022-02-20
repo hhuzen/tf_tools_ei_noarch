@@ -9,6 +9,7 @@ all:
 	@echo "e (epub read)"
 	@echo "h (html read)"
 	@echo "a (abc to svg)"
+	@echo "z (abc to suzuki)"
 
 dirs:
 	@[ -d output ] || mkdir output
@@ -59,10 +60,13 @@ html2docx:
 	ebook-convert html/index.html "output/$$EPUB_TITLE.docx"  --level1-toc //h:h1 --level2-toc //h:h2 $$COVER_OPT --authors "$(EPUB_AUTHOR)" --title  "$(EPUB_TITLE)" --language "$EPUB_LANGUAGE" ; \
 	echo " -- ebook-convert docx -- OK -- " ; 
 
-a: a_abc b
+a: a_abc z b
 
 a_abc:
 	perl $(EPUBTOOLS)/mkbook.pl abc2svg;
+
+z:
+	perl $(EPUBTOOLS)/mkbook.pl abc2suz;
 
 b build: dirs md2html html2epub 
 be build: dirs md2html html2epub 
