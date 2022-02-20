@@ -578,9 +578,9 @@ sub _doAbc2Suz($) {
     $l=~ s/"[^"]*"//g;
     $l=~ s/![^!]*!//g;
     $l=~ s/[0-9]//g;
-    print " HHH $l\n" ;
+    #print " HHH $l\n" ;
     $l=~ s/[^a-g,A-G,']//g;
-    print " HHHo $l\n" ;
+    #print " HHHo $l\n" ;
 
     next if ( $l =~ /^[ \|]*$/ );
     my @c=( split //,$l);
